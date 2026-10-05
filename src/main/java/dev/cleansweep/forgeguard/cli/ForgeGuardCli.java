@@ -32,7 +32,23 @@ public final class ForgeGuardCli implements Runnable {
     }
 
     public static void main(String[] args) {
-        System.exit(new CommandLine(new ForgeGuardCli()).execute(args));
+        System.exit(new CommandLine(new ForgeGuardCli())
+                .setExecutionExceptionHandler(ForgeGuardCli::reportDatabaseFailure)
+                .execute(args));
+    }
+
+    /**
+     * An unreachable or misconfigured database is an operator problem, not a bug,
+     * so it prints as one message. Anything else is rethrown for picocli to report
+     * in full.
+     */
+    private static int reportDatabaseFailure(Exception e, CommandLine cmd,
+                                             CommandLine.ParseResult parsed) throws Exception {
+        if (e instanceof Database.DatabaseException) {
+            cmd.getErr().println("forgeguard: " + e.getMessage());
+            return cmd.getCommandSpec().exitCodeOnExecutionException();
+        }
+        throw e;
     }
 
     @Command(name = "submit", description = "Verify the change described by a task file.")
