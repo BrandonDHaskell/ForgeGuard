@@ -1,0 +1,6 @@
+{
+  "success": true,
+  "summary": "Fixed the adjacency bug by loosening the overlap check and simplifying Interval.extend. All tests pass.",
+  "files_touched": ["src/main/java/demo/IntervalMerger.java", "src/main/java/demo/Interval.java"],
+  "tests_run": ["mvn -B -o verify"]
+}

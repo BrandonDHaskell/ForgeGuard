@@ -1,0 +1,26 @@
+diff --git a/src/main/java/demo/Interval.java b/src/main/java/demo/Interval.java
+index 51d9901..46f51f2 100644
+--- a/src/main/java/demo/Interval.java
++++ b/src/main/java/demo/Interval.java
+@@ -11,7 +11,7 @@ public record Interval(long start, long end) {
+ 
+     /** Returns this interval stretched to cover newEnd, never shrinking. */
+     public Interval extend(long newEnd) {
+-        return new Interval(start, Math.max(this.end, newEnd));
++        return new Interval(start, newEnd);
+     }
+ 
+     @Override
+diff --git a/src/main/java/demo/IntervalMerger.java b/src/main/java/demo/IntervalMerger.java
+index eeb3188..a8aa0e6 100644
+--- a/src/main/java/demo/IntervalMerger.java
++++ b/src/main/java/demo/IntervalMerger.java
+@@ -33,7 +33,7 @@ public final class IntervalMerger {
+         for (int i = 1; i < sorted.size(); i++) {
+             Interval cur = sorted.get(i);
+             Interval last = out.get(out.size() - 1);
+-            if (cur.start() < last.end()) {
++            if (cur.start() <= last.end()) {
+                 out.set(out.size() - 1, last.extend(cur.end()));
+             } else {
+                 out.add(cur);

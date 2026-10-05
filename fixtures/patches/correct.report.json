@@ -1,0 +1,6 @@
+{
+  "success": true,
+  "summary": "Adjacent intervals were not merged because the overlap check used a strict inequality. Changed to <= so touching intervals collapse.",
+  "files_touched": ["src/main/java/demo/IntervalMerger.java"],
+  "tests_run": ["mvn -B -o verify"]
+}
