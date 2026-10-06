@@ -38,8 +38,9 @@ public final class JdbcRunStore implements RunStore {
             throw new StoreException("cannot serialize task spec", e);
         }
 
-        // The task row is content-addressed, so resubmitting the same task file
-        // reuses it instead of failing on the primary key.
+        // One task row per taskId, many runs. Resubmitting a task reuses its row
+        // instead of failing on the primary key, and replaces the stored spec with
+        // the one just submitted.
         String upsertTask = """
             INSERT INTO tasks (task_id, spec_json, spec_sha256)
             VALUES (?, ?::jsonb, ?)
@@ -80,7 +81,7 @@ public final class JdbcRunStore implements RunStore {
 
     @Override
     public void recordWorkspace(UUID runId, String baseCommit) {
-        update("UPDATE runs SET base_commit = ?, started_at = now() WHERE run_id = ?",
+        update(runId, "UPDATE runs SET base_commit = ?, started_at = now() WHERE run_id = ?",
                 ps -> {
                     ps.setString(1, baseCommit);
                     ps.setObject(2, runId);
@@ -90,7 +91,7 @@ public final class JdbcRunStore implements RunStore {
     @Override
     public void recordProducerResult(UUID runId, ProducerResult result,
                                      String headCommit, String diffSha256) {
-        update("""
+        update(runId, """
                 UPDATE runs SET producer_reported_success = ?, producer_report = ?,
                                 head_commit = ?, diff_sha256 = ?
                 WHERE run_id = ?
@@ -106,7 +107,7 @@ public final class JdbcRunStore implements RunStore {
 
     @Override
     public void recordVerdict(UUID runId, Outcome outcome, ExecResult exec) {
-        update("""
+        update(runId, """
                 UPDATE runs SET state = 'DONE', outcome = ?, exit_code = ?,
                                 termination_reason = ?, duration_ms = ?, finished_at = now()
                 WHERE run_id = ?
@@ -125,7 +126,7 @@ public final class JdbcRunStore implements RunStore {
         if (content == null || content.isEmpty()) {
             return;
         }
-        update("""
+        update(runId, """
                 INSERT INTO run_logs (run_id, stream, seq, content)
                 VALUES (?, ?, COALESCE((SELECT max(seq) + 1 FROM run_logs
                                         WHERE run_id = ? AND stream = ?), 0), ?)
@@ -218,13 +219,20 @@ public final class JdbcRunStore implements RunStore {
         void bind(PreparedStatement ps) throws SQLException;
     }
 
-    private void update(String sql, Binder binder) {
+    /**
+     * Every write targets exactly one existing run. An UPDATE that matches no row
+     * succeeds in SQL, so it is checked here; otherwise evidence recorded against a
+     * wrong id would vanish without an error.
+     */
+    private void update(UUID runId, String sql, Binder binder) {
         try (Connection c = ds.getConnection();
              PreparedStatement ps = c.prepareStatement(sql)) {
             binder.bind(ps);
-            ps.executeUpdate();
+            if (ps.executeUpdate() == 0) {
+                throw new StoreException("no such run: " + runId, null);
+            }
         } catch (SQLException e) {
-            throw new StoreException("update failed: " + sql, e);
+            throw new StoreException("cannot write run " + runId + ": " + e.getMessage(), e);
         }
     }
 

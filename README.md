@@ -20,6 +20,13 @@ java -jar target/forgeguard-0.1.0-SNAPSHOT.jar submit tasks/overclaim.yaml
 java -jar target/forgeguard-0.1.0-SNAPSHOT.jar show <run-id>
 ```
 
+## Tests
+
+```bash
+mvn -B test     # unit tests; no database needed
+mvn -B verify   # also the @Tag("integration") tests, against the PostgreSQL above
+```
+
 ## Configuration
 
 | Variable | Default |
