@@ -17,11 +17,21 @@ import java.util.List;
  */
 public final class GitDiffInspector implements DiffInspector {
 
+    /**
+     * Pins every diff option that user or repository git config could otherwise
+     * change, so the same logical change yields the same bytes, and the same
+     * hash, on any machine.
+     */
+    private static final String[] DIFF = {
+            "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
+            "--diff-algorithm=myers", "--no-indent-heuristic", "--unified=3",
+            "--src-prefix=a/", "--dst-prefix=b/"};
+
     @Override
     public Diff inspect(Workspace workspace) {
-        String unified = git(workspace, "diff");
+        String unified = git(workspace, DIFF);
         String head = git(workspace, "rev-parse", "HEAD").trim();
-        List<String> touched = Arrays.stream(git(workspace, "diff", "--name-only").split("\n"))
+        List<String> touched = Arrays.stream(git(workspace, withArgs(DIFF, "--name-only")).split("\n"))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .toList();
@@ -48,10 +58,15 @@ public final class GitDiffInspector implements DiffInspector {
         }
     }
 
+    private static String[] withArgs(String[] base, String... extra) {
+        String[] all = Arrays.copyOf(base, base.length + extra.length);
+        System.arraycopy(extra, 0, all, base.length, extra.length);
+        return all;
+    }
+
     private static String git(Workspace ws, String... args) {
-        String[] cmd = new String[args.length + 1];
-        cmd[0] = "git";
-        System.arraycopy(args, 0, cmd, 1, args.length);
+        // quotepath=off keeps non-ASCII paths literal instead of octal-escaped.
+        String[] cmd = withArgs(new String[] {"git", "-c", "core.quotepath=off"}, args);
         try {
             Process p = new ProcessBuilder(cmd)
                     .directory(ws.root().toFile())
