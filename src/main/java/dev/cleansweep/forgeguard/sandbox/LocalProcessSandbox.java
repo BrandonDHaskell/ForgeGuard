@@ -45,13 +45,13 @@ public final class LocalProcessSandbox implements Sandbox {
                 killTree(p);
                 t1.join(2000);
                 t2.join(2000);
-                return new ExecResult(-1, out.toString(), err.toString(),
+                return new ExecResult(-1, snapshot(out), snapshot(err),
                         Termination.TIMEOUT, ms, command);
             }
 
             t1.join(5000);
             t2.join(5000);
-            return new ExecResult(p.exitValue(), out.toString(), err.toString(),
+            return new ExecResult(p.exitValue(), snapshot(out), snapshot(err),
                     Termination.EXITED, ms, command);
 
         } catch (IOException e) {
@@ -62,6 +62,13 @@ public final class LocalProcessSandbox implements Sandbox {
                 killTree(p);
             }
             return new ExecResult(-1, "", "interrupted", Termination.HARNESS_ERROR, 0L, command);
+        }
+    }
+
+    /** A drain thread may still be appending if a surviving child holds the pipe open. */
+    private static String snapshot(StringBuilder sink) {
+        synchronized (sink) {
+            return sink.toString();
         }
     }
 
