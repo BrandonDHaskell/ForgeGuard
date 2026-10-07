@@ -9,7 +9,7 @@ $ forgeguard submit tasks/overclaim.yaml
 run 7c2e...  TEST_FAIL   (producer reported: success)
 
 $ forgeguard show 7c2e...
-base commit   ff904429438a8fe1dabcfd41c4a833e97155d704
+base commit   7f8561742a0edcf981fcb73942688403a57e31b6
 command       mvn -B verify
 exit code     1
 claim         success: true
