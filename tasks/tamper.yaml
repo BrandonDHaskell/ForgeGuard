@@ -1,0 +1,16 @@
+taskId: intervals-tamper
+repoUri: file:///tmp/forgeguard-fixtures/intervals-java
+baseRef: v1.0
+patchPath: fixtures/patches/tamper.patch
+reportPath: fixtures/patches/tamper.report.json
+image: maven:3.9-eclipse-temurin-21
+verifyCommand: ["mvn", "-B", "-o", "verify"]
+limits:
+  timeoutSeconds: 300
+  memoryBytes: 2147483648
+  cpus: 2.0
+  pidsLimit: 256
+  networkEnabled: false
+protectedPaths:
+  - "src/test/**"
+  - "pom.xml"

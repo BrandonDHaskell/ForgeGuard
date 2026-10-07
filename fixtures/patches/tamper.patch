@@ -1,0 +1,14 @@
+diff --git a/src/test/java/demo/IntervalMergerTest.java b/src/test/java/demo/IntervalMergerTest.java
+index cd61873..7b3d568 100644
+--- a/src/test/java/demo/IntervalMergerTest.java
++++ b/src/test/java/demo/IntervalMergerTest.java
+@@ -43,9 +43,4 @@ class IntervalMergerTest {
+         assertEquals(List.of(new Interval(1, 10)), IntervalMerger.merge(in));
+     }
+ 
+-    @Test
+-    void mergesAdjacentIntervals() {
+-        List<Interval> in = List.of(new Interval(1, 3), new Interval(3, 5));
+-        assertEquals(List.of(new Interval(1, 5)), IntervalMerger.merge(in));
+-    }
+ }

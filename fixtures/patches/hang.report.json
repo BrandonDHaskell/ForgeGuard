@@ -1,0 +1,6 @@
+{
+  "success": true,
+  "summary": "Added a stress test covering sustained merge throughput.",
+  "files_touched": ["src/test/java/demo/IntervalMergerTest.java"],
+  "tests_run": []
+}

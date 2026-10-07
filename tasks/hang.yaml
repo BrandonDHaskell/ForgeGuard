@@ -1,0 +1,16 @@
+taskId: intervals-hang
+repoUri: file:///tmp/forgeguard-fixtures/intervals-java
+baseRef: v1.0
+patchPath: fixtures/patches/hang.patch
+reportPath: fixtures/patches/hang.report.json
+image: maven:3.9-eclipse-temurin-21
+verifyCommand: ["mvn", "-B", "-o", "verify"]
+limits:
+  timeoutSeconds: 60
+  memoryBytes: 2147483648
+  cpus: 2.0
+  pidsLimit: 256
+  networkEnabled: false
+protectedPaths:
+  - "src/test/**"
+  - "pom.xml"
