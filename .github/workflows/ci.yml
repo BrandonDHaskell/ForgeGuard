@@ -26,6 +26,13 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
           cache: maven
+      - name: Build fixture repo
+        run: ./fixtures/build-fixtures.sh
+      # The verification command runs `mvn -o`, so the fixture's own plugins and
+      # test dependencies must already be in ~/.m2. The baseline has one failing
+      # test by design, hence the ignore flag.
+      - name: Warm the fixture dependency cache
+        run: mvn -B -f /tmp/forgeguard-fixtures/intervals-java/pom.xml verify -Dmaven.test.failure.ignore=true
       - name: Build and test
         run: mvn -B verify
         env:
