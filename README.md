@@ -49,7 +49,7 @@ producer/    Producer                 anything that mutates a workspace
 sandbox/     Sandbox, ExecResult      isolated execution under limits
 verify/      VerificationStrategy     build and test contract per project type
 store/       RunStore, RunRecord      persisted evidence
-cli/         ForgeGuardCli            submit, show, watch, summary
+cli/         ForgeGuardCli            submit, show, list
 ```
 
 ## Ownership
