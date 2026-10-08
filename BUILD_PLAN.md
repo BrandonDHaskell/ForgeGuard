@@ -1,6 +1,8 @@
 # Milestone 1 build plan
 
-**Due October 7.** Everything below is written or stubbed in this repository.
+**Due October 7.** Everything below is written and verified end to end on 2026-10-07:
+unit and integration tests pass, and the four fixture tasks produce the verdicts
+in the table under "Verify before you trust the demo".
 
 ## The one demo
 
@@ -22,15 +24,15 @@ The producer claimed success. The harness disagrees.
 
 | # | Component | Class | Status |
 | --- | --- | --- | --- |
-| 1 | Task loader | `TaskSpecLoader` | written |
-| 2 | Workspace | `JGitWorkspaceProvider` | written |
-| 3 | Producer | `ScriptedProducer` | written |
-| 4 | Sandbox | `LocalProcessSandbox` | written |
-| 5 | Strategy | `MavenStrategy` | written |
-| 6 | Diff | `GitDiffInspector` | written |
-| 7 | Store | `JdbcRunStore`, `Database`, `V1__init.sql` | written |
-| 8 | CLI | `ForgeGuardCli` (submit, show, list) | written |
-| 9 | Orchestrator | `VerificationRun` | written |
+| 1 | Task loader | `TaskSpecLoader` | verified |
+| 2 | Workspace | `JGitWorkspaceProvider` | verified |
+| 3 | Producer | `ScriptedProducer` | verified |
+| 4 | Sandbox | `LocalProcessSandbox` | verified |
+| 5 | Strategy | `MavenStrategy` | verified |
+| 6 | Diff | `GitDiffInspector` | verified |
+| 7 | Store | `JdbcRunStore`, `Database`, `V1__init.sql` | verified |
+| 8 | CLI | `ForgeGuardCli` (submit, show, list) | verified |
+| 9 | Orchestrator | `VerificationRun` | verified |
 
 ## What is NOT in M1
 
