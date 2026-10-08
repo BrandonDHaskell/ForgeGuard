@@ -180,9 +180,9 @@ public final class ForgeGuardCli implements Runnable {
 
         /** The 20 newest runs. One with no verdict yet shows its state instead. */
         static void list(RunStore store, PrintWriter out) {
-            out.printf("%-38s %-24s %-10s %s%n", "RUN", "TASK", "VERDICT", "CLAIM");
+            out.printf("%-38s %-24s %-24s %s%n", "RUN", "TASK", "VERDICT", "CLAIM");
             for (RunRecord r : store.recent(20)) {
-                out.printf("%-38s %-24s %-10s %s%n",
+                out.printf("%-38s %-24s %-24s %s%n",
                         r.runId(), r.taskId(), r.outcome() == null ? r.state() : r.outcome(),
                         r.producerReportedSuccess() ? "success" : "failure");
             }

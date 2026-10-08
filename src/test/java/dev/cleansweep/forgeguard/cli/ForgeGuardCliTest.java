@@ -4,7 +4,9 @@ import dev.cleansweep.forgeguard.orchestrator.DiffInspector;
 import dev.cleansweep.forgeguard.orchestrator.VerificationRun;
 import dev.cleansweep.forgeguard.producer.Producer;
 import dev.cleansweep.forgeguard.producer.ProducerResult;
+import dev.cleansweep.forgeguard.sandbox.ExecResult;
 import dev.cleansweep.forgeguard.sandbox.Sandbox;
+import dev.cleansweep.forgeguard.sandbox.Termination;
 import dev.cleansweep.forgeguard.spec.Limits;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import dev.cleansweep.forgeguard.support.CannedSandbox;
@@ -122,6 +124,23 @@ class ForgeGuardCliTest {
         assertTrue(rows.stream().anyMatch(l -> l.startsWith(pending.toString()) && l.contains("PENDING")), rows.toString());
         assertTrue(rows.stream().anyMatch(l -> l.startsWith(done.toString()) && l.contains("TEST_FAIL")), rows.toString());
         assertFalse(printed.toString().contains("null"), rows.toString());
+    }
+
+    @Test
+    void listKeepsClaimColumnAlignedForLongestVerdict() {
+        UUID id = store.create(OVERCLAIM);
+        store.recordVerdict(id, Outcome.PROTECTED_PATH_MODIFIED,
+                new ExecResult(-1, "", "", Termination.EXITED, 0L, List.of()));
+        submit(CannedSandbox.passing());
+
+        printed.getBuffer().setLength(0);
+        ForgeGuardCli.List.list(store, out);
+        List<String> rows = printed.toString().lines().toList();
+        int claimColumn = rows.get(0).indexOf("CLAIM");
+        for (String row : rows.subList(1, rows.size())) {
+            String claim = row.substring(claimColumn);
+            assertTrue(claim.equals("success") || claim.equals("failure"), row);
+        }
     }
 
     // Errors raised before any database connection: the real command line, in process.
