@@ -19,7 +19,7 @@ author, committer, and both dates are fixed, the commit SHA is identical on ever
 machine:
 
 ```
-ff904429438a8fe1dabcfd41c4a833e97155d704
+7f8561742a0edcf981fcb73942688403a57e31b6
 ```
 
 That SHA makes two run records **source**-comparable. It does not make them
@@ -65,9 +65,9 @@ RunStore.create             INSERT tasks, INSERT runs (state=PENDING)
   |                         -> run_id = 7c2e...
   v
 WorkspaceProvider.provision JGit clone file:///tmp/... ; checkout v1.0
-  |                         -> /tmp/fg-ws-7c2e/ , baseCommit=ff904429...
+  |                         -> /tmp/fg-ws-7c2e/ , baseCommit=7f856174...
   v
-RunStore.recordWorkspace    UPDATE runs SET base_commit='ff904429...'
+RunStore.recordWorkspace    UPDATE runs SET base_commit='7f856174...'
   |
   v
 Producer.run                git apply --whitespace=nowarn overclaim.patch
