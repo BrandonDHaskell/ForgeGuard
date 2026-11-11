@@ -45,3 +45,10 @@ jobs:
           FORGEGUARD_JDBC_URL: jdbc:postgresql://localhost:5432/forgeguard
           FORGEGUARD_DB_USER: forgeguard
           FORGEGUARD_DB_PASSWORD: forgeguard
+      # Grades the harness against demo/expected.tsv; fails on any mismatch.
+      - name: Demo against the answer key
+        run: ./demo/run-all.sh
+        env:
+          FORGEGUARD_JDBC_URL: jdbc:postgresql://localhost:5432/forgeguard
+          FORGEGUARD_DB_USER: forgeguard
+          FORGEGUARD_DB_PASSWORD: forgeguard
