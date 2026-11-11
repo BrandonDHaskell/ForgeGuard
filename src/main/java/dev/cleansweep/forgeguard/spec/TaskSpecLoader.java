@@ -34,7 +34,7 @@ public final class TaskSpecLoader {
             .enable(DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY);
 
     private static final Set<String> FIELDS = Set.of("taskId", "repoUri", "baseRef", "patchPath",
-            "reportPath", "image", "verifyCommand", "limits", "protectedPaths");
+            "reportPath", "image", "verifyCommand", "limits", "protectedPaths", "strategy");
     private static final Set<String> LIMIT_FIELDS = Set.of("timeoutSeconds", "memoryBytes", "cpus",
             "pidsLimit", "networkEnabled");
 
@@ -64,7 +64,8 @@ public final class TaskSpecLoader {
                 optional(n, "image"),
                 strings(n, "verifyCommand"),
                 limits(n.get("limits")),
-                strings(n, "protectedPaths"));
+                strings(n, "protectedPaths"),
+                req(n, "strategy"));
 
         Path repo = file.toAbsolutePath().getParent().getParent();
         if (repo == null) {
