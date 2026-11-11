@@ -220,9 +220,9 @@ What a fully reproducible record would pin:
 | base commit | recorded |
 | diff sha256 | recorded |
 | verify command argv | recorded |
-| resource limits | recorded |
-| network policy | recorded |
-| container image digest | column exists, not populated (M2) |
+| resource limits | timeout recorded; memory, CPU and pids NULL because nothing enforces them (requested values are in `tasks.spec_json`) |
+| network policy | NULL: not enforced; the verification run has the host's network |
+| container image digest | column exists, not populated (Docker cut) |
 | JDK and Maven versions | not recorded; implied by the image digest once pinned |
 | dependency cache identity | not recorded (M2, arrives with `--network none`) |
 | ForgeGuard version | not recorded |
