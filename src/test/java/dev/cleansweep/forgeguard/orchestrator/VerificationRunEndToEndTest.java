@@ -80,15 +80,19 @@ class VerificationRunEndToEndTest {
         assertTrue(store.logs(r.runId(), "stdout").contains("mergesContainedInterval"));
     }
 
-    /** M1 has no policy check, so deleting the failing test goes green. M2 changes this. */
+    /** Deleting the failing test would go green, so it must be rejected before Maven runs. */
     @Test
-    void tamperPassesBecauseM1HasNoProtectedPathCheck() {
+    void tamperIsRejectedWithoutRunning() {
         var r = execute("tamper", 300);
 
         assertTrue(r.producerReportedSuccess());
-        assertEquals(Outcome.PASS, r.outcome());
+        assertEquals(Outcome.PROTECTED_PATH_MODIFIED, r.outcome());
+        assertEquals(-1, r.exitCode());
+        assertTrue(store.logs(r.runId(), "stdout").isEmpty(), "Maven must not have run");
+        assertTrue(store.logs(r.runId(), "stderr").contains("src/test/java/demo/IntervalMergerTest.java"));
     }
 
+    /** The loop is in production code, so the protected-path check lets it through to the timeout. */
     @Test
     void hangTimesOut() {
         var r = execute("hang", 20);
