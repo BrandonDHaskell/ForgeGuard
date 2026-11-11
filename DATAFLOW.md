@@ -44,7 +44,7 @@ test is the task.
 | `correct` | `<` becomes `<=` | success: true | `PASS` |
 | `overclaim` | `<` becomes `<=`, and `Interval.extend` drops its `Math.max` | success: true | `TEST_FAIL` |
 | `tamper` | Deletes `mergesAdjacentIntervals` | success: true | `PASS` in M1, `PROTECTED_PATH_MODIFIED` in M2 |
-| `hang` | Adds a test with `while (true)` | success: true | `TIMEOUT` |
+| `hang` | Adds a sort shortcut to `IntervalMerger` whose loop never increments | success: true | `TIMEOUT` |
 
 `overclaim` is the demo that matters. It genuinely fixes the adjacency bug, so
 the originally failing test now passes, but the simplified `extend` breaks
