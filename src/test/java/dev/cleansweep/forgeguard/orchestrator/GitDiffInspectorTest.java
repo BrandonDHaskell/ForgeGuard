@@ -8,6 +8,7 @@ import dev.cleansweep.forgeguard.workspace.Workspace;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -46,6 +47,39 @@ class GitDiffInspectorTest {
             assertEquals(List.of("src/main/java/demo/Interval.java",
                     "src/main/java/demo/IntervalMerger.java"), d.touchedPaths());
             assertEquals(ws.baseCommit(), d.headCommit());
+        }
+    }
+
+    @Test
+    void newFileIsTouchedAndChangesTheHash() throws Exception {
+        try (Workspace plain = patched("overclaim"); Workspace extra = patched("overclaim")) {
+            Path added = extra.root().resolve("src/main/java/demo/Extra.java");
+            Files.writeString(added, "package demo;\n\nclass Extra {}\n");
+
+            var expected = inspector.inspect(plain);
+            var actual = inspector.inspect(extra);
+
+            assertTrue(actual.touchedPaths().contains("src/main/java/demo/Extra.java"),
+                    actual.touchedPaths().toString());
+            assertNotEquals(expected.sha256(), actual.sha256());
+            assertTrue(actual.unifiedDiff().contains("new file mode"));
+        }
+    }
+
+    @Test
+    void committedChangeIsStillSeen() throws Exception {
+        try (Workspace dirty = patched("overclaim"); Workspace committed = patched("overclaim")) {
+            Process p = new ProcessBuilder("git", "-c", "user.name=p", "-c", "user.email=p@example.invalid",
+                    "commit", "-qam", "producer commit")
+                    .directory(committed.root().toFile()).inheritIO().start();
+            assertEquals(0, p.waitFor());
+
+            var expected = inspector.inspect(dirty);
+            var actual = inspector.inspect(committed);
+
+            assertNotEquals(committed.baseCommit(), actual.headCommit());
+            assertEquals(expected.touchedPaths(), actual.touchedPaths());
+            assertEquals(expected.sha256(), actual.sha256());
         }
     }
 
