@@ -1,0 +1,23 @@
+taskId: intervals-py-hang
+repoUri: file:///tmp/forgeguard-fixtures/intervals-python
+baseRef: v1.0
+patchPath: fixtures/patches/py-hang.patch
+reportPath: fixtures/patches/py-hang.report.json
+strategy: pytest
+verifyCommand: ["python", "-m", "pytest", "-q"]
+limits:
+  timeoutSeconds: 60
+  memoryBytes: 2147483648
+  cpus: 2.0
+  pidsLimit: 256
+  networkEnabled: false
+# pytest reads more than the test files: a conftest.py anywhere can rewrite
+# results, and these config files can change which tests are collected.
+protectedPaths:
+  - "tests/**"
+  - "conftest.py"
+  - "**/conftest.py"
+  - "pyproject.toml"
+  - "pytest.ini"
+  - "setup.cfg"
+  - "tox.ini"
