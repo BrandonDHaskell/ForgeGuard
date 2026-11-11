@@ -7,9 +7,8 @@ import java.util.List;
 /**
  * Runs a command against a workspace under enforced limits.
  *
- * <p>Two implementations are expected: a Docker-backed one for real
- * verification, and a local-process one used as a test fixture and as the
- * fallback if container execution is unavailable.
+ * <p>LocalProcessSandbox is the implementation in use. Each implementation
+ * documents which limits it actually enforces.
  */
 public interface Sandbox {
     ExecResult exec(Workspace workspace, List<String> command, Limits limits);
