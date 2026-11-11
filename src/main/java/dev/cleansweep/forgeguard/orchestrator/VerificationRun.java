@@ -75,9 +75,12 @@ public final class VerificationRun {
             // that edits the test suite is rejected without ever executing.
 
             var verification = strategy.verify(ws, sandbox, spec);
-            store.recordVerdict(runId, verification.outcome(), verification.evidence());
+            // Logs before the verdict: a failed log write lands in the catch
+            // below, which would otherwise overwrite a real verdict with
+            // HARNESS_ERROR. A verdict is only recorded once its evidence is.
             store.appendLog(runId, "stdout", verification.evidence().stdout());
             store.appendLog(runId, "stderr", verification.evidence().stderr());
+            store.recordVerdict(runId, verification.outcome(), verification.evidence());
             return runId;
 
         } catch (RuntimeException e) {
