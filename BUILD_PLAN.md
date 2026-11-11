@@ -42,34 +42,34 @@ pytest, coverage, hunks, metrics, GitHub anything, live agents.
 `DockerSandbox` and `ProtectedPathCheck` are in the tree as M2 targets. Neither
 is wired into the M1 path.
 
-## Milestone 2: ranked, pick the top two or three
+## Milestone 2 scope
 
-1. **`ProtectedPathCheck`.** Cheapest and most important. Without it, deleting the
-   failing test defeats the harness. Also the clearest demonstration that
-   verification is more than running tests, since tampering, network access, and
-   resource exhaustion are not expressible as unit tests.
-2. **`DockerSandbox`.** Makes the isolation claim in the proposal true. Carries
-   two sub-tasks: seeding a `.m2` cache (required once `--network none` is on) and
-   pinning the image by digest into `runs.image_digest`.
-3. **Work queue.** `SELECT ... FOR UPDATE SKIP LOCKED`, leases, reclaim. This is
-   the most substantial use of PostgreSQL in the project and it is in the accepted
-   proposal, so cutting it is a third scope revision.
-4. **`PytestStrategy`.** Proves the abstraction is not Maven-specific. Cheap, but
-   it demonstrates a design property rather than adding a capability.
+Decided, not ranked: the proposal's Milestone 2 features, plus the fixes that
+make the demo verdicts correct.
 
-All four is how the scope grew the first time.
+1. **Work queue** with `SELECT ... FOR UPDATE SKIP LOCKED` and leases, and
+   several workers drawing from it.
+2. **Lease expiry and reclaim**, folded into the claim query rather than a
+   separate reaper.
+3. **`PytestStrategy`** with a Python fixture and the same four scenarios.
+4. **`ProtectedPathCheck`** wired in before the sandbox, so `tamper` is rejected.
+
+**`DockerSandbox` is cut** and reported as designed, not delivered. As written it
+copies into a tmpfs (which `docker cp` cannot do), leaves root-owned files the
+container user cannot write, and never points Maven at the copied cache.
+`PROPOSAL_TRACE.md` maps each feature to its class, test and demo step, and
+lists every change from the proposal.
 
 ## Known gaps, named
 
 - **`LocalProcessSandbox` does not isolate.** It enforces a timeout and kills the
-  process tree. It does not bound memory, filesystem, or network. The isolation
-  claim belongs to `DockerSandbox` in M2, and the proposal should say M1 is
-  process-level containment only.
-- **Dependency cache.** Irrelevant in M1, since the host `~/.m2` is used. Becomes
-  a blocker the moment `--network none` appears. Seeding it is an M2 task.
-- **Reclaim is not designed.** When a lease expires, the claim transaction must
-  null every verdict column and delete that run's `run_logs` rows, or a record
-  ends up with one worker's exit code and another's logs. M2.
+  process tree. It does not bound memory, filesystem, or network. With Docker
+  cut in M2, this is the final threat model: process-level containment only.
+- **Dependency cache.** The host `~/.m2` is used, so it only mattered for
+  `--network none`, which left with Docker.
+- **Reclaim.** When a lease expires, the claim transaction must null every
+  verdict column and delete that run's `run_logs` rows, or a record ends up with
+  one worker's exit code and another's logs. Designed this way for M2 (T2).
 
 ## Split
 
@@ -116,6 +116,11 @@ The four fixture patches produce four different verdicts by construction:
 | `correct` | `<` becomes `<=` | `PASS` |
 | `overclaim` | also drops `Math.max` in `Interval.extend` | `TEST_FAIL` |
 | `tamper` | deletes the failing test | `PASS` in M1, `PROTECTED_PATH_MODIFIED` in M2 |
+| `hang` | adds `while (true)` | `TIMEOUT` |
+
+`tamper` passing in M1 is the honest state of the project and worth saying out
+loud: without the protected-path check, deleting the failing test defeats the
+harness. That is the argument for building it in M2.
 
 Out of scope for CS 601 entirely, however good the ideas are: live LLM producers,
 an auditor agent, hidden evaluator test injection, a labelled corpus of 12 to 20
@@ -123,8 +128,3 @@ cases, and reproducibility measured as an experimental result. The instructor
 removed the agentic requirement, and adding an LLM to the producer would destroy
 the determinism that makes this demo work on two machines and in CI. These belong
 to the master's project, not to this one.
-| `hang` | adds `while (true)` | `TIMEOUT` |
-
-`tamper` passing in M1 is the honest state of the project and worth saying out
-loud: without the protected-path check, deleting the failing test defeats the
-harness. That is the argument for building it in M2.
