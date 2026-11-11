@@ -55,6 +55,18 @@ class TaskSpecLoaderTest {
         assertTrue(Files.isRegularFile(t.reportFile()), t.reportFile().toString());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"correct", "overclaim", "tamper", "hang"})
+    void committedPytestTasksLoad(String name) {
+        var t = loader.load(Path.of("tasks", "py-" + name + ".yaml"));
+
+        assertEquals("intervals-py-" + name, t.spec().taskId());
+        assertEquals("pytest", t.spec().strategy());
+        assertEquals(List.of("python", "-m", "pytest", "-q"), t.spec().verifyCommand());
+        assertTrue(Files.isRegularFile(t.patchFile()), t.patchFile().toString());
+        assertTrue(Files.isRegularFile(t.reportFile()), t.reportFile().toString());
+    }
+
     @Test
     void omittedLimitsAreTheDefaults() throws IOException {
         assertEquals(Limits.DEFAULTS, loader.load(task(MINIMAL)).spec().limits());
