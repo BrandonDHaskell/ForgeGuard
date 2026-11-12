@@ -21,6 +21,7 @@ class TaskSpecLoaderTest {
             baseRef: v1.0
             patchPath: fixtures/t.patch
             reportPath: fixtures/t.report.json
+            strategy: maven
             verifyCommand: ["mvn", "-B", "verify"]
             """;
 
@@ -49,6 +50,7 @@ class TaskSpecLoaderTest {
         assertEquals("intervals-" + name, t.spec().taskId());
         assertEquals(List.of("mvn", "-B", "-o", "verify"), t.spec().verifyCommand());
         assertEquals(List.of("src/test/**", "pom.xml"), t.spec().protectedPaths());
+        assertEquals("maven", t.spec().strategy());
         assertTrue(Files.isRegularFile(t.patchFile()), t.patchFile().toString());
         assertTrue(Files.isRegularFile(t.reportFile()), t.reportFile().toString());
     }
@@ -72,6 +74,19 @@ class TaskSpecLoaderTest {
 
         assertEquals(repo.resolve("fixtures/t.patch"), t.patchFile());
         assertEquals(repo.resolve("fixtures/t.report.json"), t.reportFile());
+    }
+
+    /** No default: a task that silently ran under the wrong build tool would mislead. */
+    @Test
+    void missingStrategyIsNamed() throws IOException {
+        String msg = rejection(MINIMAL.replace("strategy: maven\n", ""));
+        assertTrue(msg.contains("missing required field: strategy"), msg);
+    }
+
+    @Test
+    void strategyMustBeAString() throws IOException {
+        String msg = rejection(MINIMAL.replace("strategy: maven", "strategy: [maven]"));
+        assertTrue(msg.contains("strategy must be a string"), msg);
     }
 
     @Test

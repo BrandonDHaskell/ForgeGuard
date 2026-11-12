@@ -62,6 +62,12 @@ public final class JdbcRunStore implements RunStore {
             ON CONFLICT (task_id) DO UPDATE SET spec_json = EXCLUDED.spec_json,
                                                 spec_sha256 = EXCLUDED.spec_sha256
             """;
+        // The runs row records the limits in force, not the limits requested, so
+        // only the timeout is written: it is the one limit LocalProcessSandbox
+        // enforces. network_enabled, mem_limit_bytes, cpu_limit and pids_limit
+        // stay NULL, meaning "not enforced", instead of claiming a disabled
+        // network or a 2 GB cap that nothing applied. The requested values are
+        // still in tasks.spec_json.
         String insertRun = """
             INSERT INTO runs (run_id, task_id, state, verify_command, network_enabled,
                               mem_limit_bytes, cpu_limit, pids_limit, timeout_seconds, task_file)

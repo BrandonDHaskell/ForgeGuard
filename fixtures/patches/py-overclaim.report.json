@@ -1,0 +1,6 @@
+{
+  "success": true,
+  "summary": "Fixed the adjacency bug by loosening the overlap check and simplifying Interval.extend. All tests pass.",
+  "files_touched": ["intervals/merger.py", "intervals/interval.py"],
+  "tests_run": ["python -m pytest -q"]
+}

@@ -1,6 +1,7 @@
 package dev.cleansweep.forgeguard.store;
 
 import dev.cleansweep.forgeguard.producer.ProducerResult;
+import dev.cleansweep.forgeguard.spec.Limits;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -26,6 +27,8 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The contract against a live PostgreSQL, plus the checks only SQL can see.

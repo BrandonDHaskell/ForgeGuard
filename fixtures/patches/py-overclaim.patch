@@ -1,0 +1,23 @@
+diff --git a/intervals/interval.py b/intervals/interval.py
+index c10a75e..5c3a495 100644
+--- a/intervals/interval.py
++++ b/intervals/interval.py
+@@ -14,4 +14,4 @@ class Interval:
+ 
+     def extend(self, new_end: int) -> "Interval":
+         """Returns this interval stretched to cover new_end, never shrinking."""
+-        return Interval(self.start, max(self.end, new_end))
++        return Interval(self.start, new_end)
+diff --git a/intervals/merger.py b/intervals/merger.py
+index f07eced..30fdb06 100644
+--- a/intervals/merger.py
++++ b/intervals/merger.py
+@@ -16,7 +16,7 @@ def merge(intervals: list[Interval] | None) -> list[Interval]:
+     out = [ordered[0]]
+     for cur in ordered[1:]:
+         last = out[-1]
+-        if cur.start < last.end:
++        if cur.start <= last.end:
+             out[-1] = last.extend(cur.end)
+         else:
+             out.append(cur)

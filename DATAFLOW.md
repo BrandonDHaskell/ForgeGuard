@@ -44,7 +44,7 @@ test is the task.
 | `correct` | `<` becomes `<=` | success: true | `PASS` |
 | `overclaim` | `<` becomes `<=`, and `Interval.extend` drops its `Math.max` | success: true | `TEST_FAIL` |
 | `tamper` | Deletes `mergesAdjacentIntervals` | success: true | `PASS` in M1, `PROTECTED_PATH_MODIFIED` in M2 |
-| `hang` | Adds a test with `while (true)` | success: true | `TIMEOUT` |
+| `hang` | Adds a sort shortcut to `IntervalMerger` whose loop never increments | success: true | `TIMEOUT` |
 
 `overclaim` is the demo that matters. It genuinely fixes the adjacency bug, so
 the originally failing test now passes, but the simplified `extend` breaks
@@ -220,9 +220,9 @@ What a fully reproducible record would pin:
 | base commit | recorded |
 | diff sha256 | recorded |
 | verify command argv | recorded |
-| resource limits | recorded |
-| network policy | recorded |
-| container image digest | column exists, not populated (M2) |
+| resource limits | timeout recorded; memory, CPU and pids NULL because nothing enforces them (requested values are in `tasks.spec_json`) |
+| network policy | NULL: not enforced; the verification run has the host's network |
+| container image digest | column exists, not populated (Docker cut) |
 | JDK and Maven versions | not recorded; implied by the image digest once pinned |
 | dependency cache identity | not recorded (M2, arrives with `--network none`) |
 | ForgeGuard version | not recorded |
