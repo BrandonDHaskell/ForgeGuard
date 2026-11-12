@@ -4,6 +4,7 @@ baseRef: v1.0
 patchPath: fixtures/patches/tamper.patch
 reportPath: fixtures/patches/tamper.report.json
 image: maven:3.9-eclipse-temurin-21
+strategy: maven
 verifyCommand: ["mvn", "-B", "-o", "verify"]
 limits:
   timeoutSeconds: 300
