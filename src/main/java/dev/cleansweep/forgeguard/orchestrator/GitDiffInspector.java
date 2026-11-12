@@ -27,11 +27,27 @@ public final class GitDiffInspector implements DiffInspector {
             "--diff-algorithm=myers", "--no-indent-heuristic", "--unified=3",
             "--src-prefix=a/", "--dst-prefix=b/"};
 
+    /**
+     * Stages everything, then diffs the index against the base commit.
+     *
+     * <p>A plain {@code git diff} compares the working tree to the index, so it
+     * misses files the producer created and anything it committed. Staging with
+     * {@code add -A} brings in new and deleted files; diffing against the base
+     * commit rather than HEAD keeps committed changes visible. Both matter for
+     * the protected-path check: a change it cannot see, it cannot reject.
+     *
+     * <p>The global excludes file is switched off so a host's personal ignore
+     * rules cannot hide a file on one laptop and not the other. The repository's
+     * own .gitignore still applies, and an edit to it shows up in the diff.
+     */
     @Override
     public Diff inspect(Workspace workspace) {
-        String unified = git(workspace, DIFF);
+        String base = workspace.baseCommit();
+        git(workspace, "-c", "core.excludesFile=/dev/null", "add", "-A");
+        String unified = git(workspace, withArgs(DIFF, "--cached", base));
         String head = git(workspace, "rev-parse", "HEAD").trim();
-        List<String> touched = Arrays.stream(git(workspace, withArgs(DIFF, "--name-only")).split("\n"))
+        List<String> touched = Arrays.stream(
+                        git(workspace, withArgs(DIFF, "--cached", "--name-only", base)).split("\n"))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .toList();

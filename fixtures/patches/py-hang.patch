@@ -1,0 +1,20 @@
+diff --git a/intervals/merger.py b/intervals/merger.py
+index f07eced..edbc0f2 100644
+--- a/intervals/merger.py
++++ b/intervals/merger.py
+@@ -11,7 +11,14 @@ def merge(intervals: list[Interval] | None) -> list[Interval]:
+     if not intervals:
+         return []
+ 
+-    ordered = sorted(intervals, key=lambda i: i.start)
++    # Skip the sort when the input is already ordered.
++    already_ordered = True
++    i = 0
++    while i < len(intervals) - 1:
++        if intervals[i].start > intervals[i + 1].start:
++            already_ordered = False
++
++    ordered = list(intervals) if already_ordered else sorted(intervals, key=lambda i: i.start)
+ 
+     out = [ordered[0]]
+     for cur in ordered[1:]:

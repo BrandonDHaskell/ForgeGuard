@@ -1,0 +1,13 @@
+diff --git a/intervals/merger.py b/intervals/merger.py
+index f07eced..30fdb06 100644
+--- a/intervals/merger.py
++++ b/intervals/merger.py
+@@ -16,7 +16,7 @@ def merge(intervals: list[Interval] | None) -> list[Interval]:
+     out = [ordered[0]]
+     for cur in ordered[1:]:
+         last = out[-1]
+-        if cur.start < last.end:
++        if cur.start <= last.end:
+             out[-1] = last.extend(cur.end)
+         else:
+             out.append(cur)

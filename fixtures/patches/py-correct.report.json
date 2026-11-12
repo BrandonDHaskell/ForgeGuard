@@ -1,0 +1,6 @@
+{
+  "success": true,
+  "summary": "Adjacent intervals were not merged because the overlap check used a strict inequality. Changed to <= so touching intervals collapse.",
+  "files_touched": ["intervals/merger.py"],
+  "tests_run": ["python -m pytest -q"]
+}

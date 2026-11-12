@@ -9,6 +9,7 @@ import dev.cleansweep.forgeguard.sandbox.Termination;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import dev.cleansweep.forgeguard.store.RunStore;
 import dev.cleansweep.forgeguard.verify.Outcome;
+import dev.cleansweep.forgeguard.verify.VerificationStrategies;
 import dev.cleansweep.forgeguard.verify.VerificationStrategy;
 import dev.cleansweep.forgeguard.workspace.Workspace;
 import dev.cleansweep.forgeguard.workspace.WorkspaceProvider;
@@ -40,21 +41,34 @@ public final class VerificationRun {
 
     private final WorkspaceProvider workspaces;
     private final Sandbox sandbox;
-    private final VerificationStrategy strategy;
+    private final VerificationStrategies strategies;
     private final RunStore store;
     private final DiffInspector diffs;
 
     public VerificationRun(WorkspaceProvider workspaces, Sandbox sandbox,
-                           VerificationStrategy strategy, RunStore store,
+                           VerificationStrategies strategies, RunStore store,
                            DiffInspector diffs) {
         this.workspaces = workspaces;
         this.sandbox = sandbox;
-        this.strategy = strategy;
+        this.strategies = strategies;
         this.store = store;
         this.diffs = diffs;
     }
 
+    /** A harness that knows one build system; a task naming any other is refused. */
+    public VerificationRun(WorkspaceProvider workspaces, Sandbox sandbox,
+                           VerificationStrategy strategy, RunStore store,
+                           DiffInspector diffs) {
+        this(workspaces, sandbox, new VerificationStrategies(List.of(strategy)), store, diffs);
+    }
+
+    /**
+     * @throws IllegalArgumentException if the task names an unknown strategy. That
+     *     is checked before the run is created, so a bad task file leaves no row
+     *     behind rather than a HARNESS_ERROR verdict.
+     */
     public UUID execute(TaskSpec spec, Producer producer) {
+        VerificationStrategy strategy = strategies.get(spec.strategy());
         UUID runId = store.create(spec);
 
         try (Workspace ws = workspaces.provision(spec)) {
@@ -75,9 +89,12 @@ public final class VerificationRun {
             // that edits the test suite is rejected without ever executing.
 
             var verification = strategy.verify(ws, sandbox, spec);
-            store.recordVerdict(runId, verification.outcome(), verification.evidence());
+            // Logs before the verdict: a failed log write lands in the catch
+            // below, which would otherwise overwrite a real verdict with
+            // HARNESS_ERROR. A verdict is only recorded once its evidence is.
             store.appendLog(runId, "stdout", verification.evidence().stdout());
             store.appendLog(runId, "stderr", verification.evidence().stderr());
+            store.recordVerdict(runId, verification.outcome(), verification.evidence());
             return runId;
 
         } catch (RuntimeException e) {

@@ -3,6 +3,7 @@ package dev.cleansweep.forgeguard.store;
 import dev.cleansweep.forgeguard.producer.ProducerResult;
 import dev.cleansweep.forgeguard.sandbox.ExecResult;
 import dev.cleansweep.forgeguard.sandbox.Termination;
+import dev.cleansweep.forgeguard.spec.Limits;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import dev.cleansweep.forgeguard.verify.Outcome;
 import org.junit.jupiter.api.AfterAll;
@@ -38,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
@@ -256,6 +258,27 @@ public final class JdbcRunStoreTest extends RunStoreContractTest {
                     out.put(n, rs.getObject(n));
                 }
                 return out;
+            }
+        }
+    }
+
+    /** LocalProcessSandbox enforces only the timeout, so the row must not claim more. */
+    @Test
+    void onlyTheEnforcedTimeoutIsRecorded() throws SQLException {
+        UUID id = store.create(spec());
+
+        try (Connection c = db.getConnection();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT timeout_seconds, network_enabled, mem_limit_bytes, cpu_limit, pids_limit
+                     FROM runs WHERE run_id = ?
+                     """)) {
+            ps.setObject(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals(Limits.DEFAULTS.timeoutSeconds(), rs.getInt("timeout_seconds"));
+                for (String unenforced : List.of("network_enabled", "mem_limit_bytes", "cpu_limit", "pids_limit")) {
+                    assertNull(rs.getObject(unenforced), unenforced + " must be NULL, not a claimed limit");
+                }
             }
         }
     }
