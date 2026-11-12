@@ -13,16 +13,14 @@ diff, Maven run, stored evidence. The four fixture tasks produce these verdicts:
 | --- | --- | --- |
 | `correct` | fixes the seeded defect | `PASS` |
 | `overclaim` | breaks another behavior, reports success | `TEST_FAIL`, flagged as a disagreement |
-| `hang` | adds an infinite loop | `TIMEOUT` |
-| `tamper` | deletes the failing test | `PASS` (see below) |
+| `hang` | adds an infinite loop to `IntervalMerger` | `TIMEOUT` |
+| `tamper` | deletes the failing test | `PROTECTED_PATH_MODIFIED`, never executed |
 
 Known limits in M1, all planned for Milestone 2:
 
 - **No isolation.** The verification command runs as a host process with your
   privileges, network, and `~/.m2`. `DockerSandbox` exists but is not wired in.
   Only run patches you trust.
-- **No protected-path rejection.** `tamper` passes because deleting the test is
-  not yet detected. `ProtectedPathCheck` exists but is not called.
 - **No work queue or lease reclaim.** `submit` runs one attempt synchronously.
 
 CS 601 side project, team Clean Sweep: Brandon Haskell and Timothy George.
