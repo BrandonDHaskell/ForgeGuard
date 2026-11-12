@@ -9,8 +9,20 @@ import dev.cleansweep.forgeguard.verify.Outcome;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -18,9 +30,10 @@ import static org.junit.jupiter.api.Assertions.*;
  * The behaviour every RunStore must have. Each implementation binds it by
  * subclassing; when both bindings pass, the orchestrator cannot tell them apart.
  *
- * <p>Every run here belongs to a fresh task named {@code contract-*}, and no test
- * assumes the store starts empty, so a binding may point at a database that
- * already holds real runs.
+ * <p>Every run here belongs to a fresh task named {@code contract-*}. A binding
+ * must give each test an empty store: claim() takes the oldest runnable run in
+ * the whole store, so a store shared with other runs could hand a test a run it
+ * never enqueued.
  */
 public abstract class RunStoreContractTest {
 
@@ -28,6 +41,8 @@ public abstract class RunStoreContractTest {
 
     private static final String BASE = "ff904429438a8fe1dabcfd41c4a833e97155d704";
     private static final List<String> COMMAND = List.of("mvn", "-B", "-o", "verify");
+    private static final Path TASK_FILE = Path.of("/repo/tasks/contract.yaml");
+    private static final Duration HOUR = Duration.ofHours(1);
 
     protected abstract RunStore store();
 
@@ -153,5 +168,160 @@ public abstract class RunStoreContractTest {
             var e = assertThrows(RuntimeException.class, write);
             assertTrue(e.getMessage().contains(ghost.toString()), e.getMessage());
         }
+    }
+
+    // --- the work queue ---------------------------------------------------
+
+    private Claim claim(String worker, Duration lease) {
+        return store().claim(worker, lease).orElseThrow(() -> new AssertionError("nothing was claimed"));
+    }
+
+    @Test
+    void emptyQueueClaimsNothing() {
+        assertTrue(store().claim("w1", HOUR).isEmpty());
+    }
+
+    @Test
+    void claimTakesTheOldestRunAndLeasesIt() {
+        Path fileA = Path.of("/repo/tasks/a.yaml");
+        Path fileB = Path.of("/repo/tasks/b.yaml");
+        UUID a = store().enqueue(spec(), fileA);
+        UUID b = store().enqueue(spec(), fileB);
+        assertEquals(RunState.PENDING, find(a).state());
+
+        Instant before = Instant.now();
+        Claim first = claim("w1", HOUR);
+        Claim second = claim("w2", HOUR);
+        Instant after = Instant.now();
+
+        assertEquals(List.of(a, b), List.of(first.runId(), second.runId()));
+        assertEquals(List.of(fileA, fileB), List.of(first.taskFile(), second.taskFile()));
+        assertEquals(List.of(0, 0), List.of(first.attempt(), second.attempt()));
+        assertEquals(RunState.CLAIMED, find(a).state());
+        assertEquals(RunState.CLAIMED, find(b).state());
+
+        // JdbcRunStore sets the lease by the database clock, so allow for drift from the JVM's.
+        Duration skew = Duration.ofMinutes(1);
+        assertTrue(first.leaseExpiresAt().isAfter(before.plus(HOUR).minus(skew)), first.toString());
+        assertTrue(first.leaseExpiresAt().isBefore(after.plus(HOUR).plus(skew)), first.toString());
+
+        assertTrue(store().claim("w3", HOUR).isEmpty());
+    }
+
+    /** A run from create() is being executed by the process that created it, or was left by M1. */
+    @Test
+    void createdRunsAreNeverClaimed() {
+        UUID id = store().create(spec());
+
+        assertTrue(store().claim("w1", Duration.ZERO).isEmpty());
+        assertEquals(RunState.PENDING, find(id).state());
+    }
+
+    @Test
+    void liveLeaseIsNotReclaimed() {
+        UUID id = store().enqueue(spec(), TASK_FILE);
+        claim("w1", HOUR);
+
+        assertTrue(store().claim("w2", HOUR).isEmpty());
+        assertEquals(RunState.CLAIMED, find(id).state());
+    }
+
+    @Test
+    void finishedRunsAreNeverClaimed() {
+        UUID id = store().enqueue(spec(), TASK_FILE);
+        claim("w1", Duration.ZERO);
+        store().recordVerdict(id, Outcome.PASS, exec(0, Termination.EXITED));
+
+        assertTrue(store().claim("w2", Duration.ZERO).isEmpty());
+        assertEquals(RunState.DONE, find(id).state());
+        assertEquals(Outcome.PASS, find(id).outcome());
+    }
+
+    /** Finish Plan T2, done when: a reclaimed run keeps nothing from the first attempt. */
+    @Test
+    void reclaimKeepsNothingFromTheFirstAttempt() {
+        TaskSpec spec = spec();
+        UUID id = store().enqueue(spec, TASK_FILE);
+        assertEquals(id, claim("w1", Duration.ZERO).runId());
+
+        // What a worker leaves when it dies after the build but before its verdict:
+        // logs are written first, so that is everything except the verdict itself.
+        store().recordWorkspace(id, BASE);
+        store().recordProducerResult(id, new ProducerResult(true, "{\"success\":true}"), BASE, "d1ff");
+        store().appendLog(id, "stdout", "BUILD FAILURE\n");
+        store().appendLog(id, "stderr", "warning\n");
+
+        Claim again = claim("w2", HOUR);
+        assertEquals(id, again.runId());
+        assertEquals(1, again.attempt());
+        assertEquals(TASK_FILE, again.taskFile());
+
+        RunRecord r = find(id);
+        assertEquals(RunState.CLAIMED, r.state());
+        assertNull(r.baseCommit());
+        assertNull(r.headCommit());
+        assertNull(r.diffSha256());
+        assertFalse(r.producerReportedSuccess());
+        assertNull(r.producerReport());
+        assertNull(r.outcome());
+        assertNull(r.exitCode());
+        assertNull(r.termination());
+        assertNull(r.startedAt());
+        assertNull(r.finishedAt());
+        assertNull(r.durationMs());
+        assertEquals("", store().logs(id, "stdout"));
+        assertEquals("", store().logs(id, "stderr"));
+
+        // The inputs are the run's, not the attempt's.
+        assertEquals(spec.taskId(), r.taskId());
+        assertEquals("mvn -B -o verify", r.verifyCommand());
+    }
+
+    @Test
+    void everyReclaimIncrementsAttempt() {
+        store().enqueue(spec(), TASK_FILE);
+
+        List<Integer> attempts = List.of(
+                claim("w1", Duration.ZERO).attempt(),
+                claim("w2", Duration.ZERO).attempt(),
+                claim("w3", HOUR).attempt());
+
+        assertEquals(List.of(0, 1, 2), attempts);
+    }
+
+    @Test
+    void concurrentClaimsNeverShareARun() throws Exception {
+        Set<UUID> queued = new HashSet<>();
+        for (int i = 0; i < 12; i++) {
+            queued.add(store().enqueue(spec(), TASK_FILE));
+        }
+
+        List<UUID> claimed = Collections.synchronizedList(new ArrayList<>());
+        try (ExecutorService pool = Executors.newFixedThreadPool(4)) {
+            List<Future<?>> workers = new ArrayList<>();
+            for (int w = 0; w < 4; w++) {
+                String worker = "w" + w;
+                workers.add(pool.submit(() -> {
+                    Optional<Claim> c;
+                    while ((c = store().claim(worker, HOUR)).isPresent()) {
+                        claimed.add(c.get().runId());
+                    }
+                }));
+            }
+            for (Future<?> f : workers) {
+                f.get(30, TimeUnit.SECONDS);
+            }
+        }
+
+        assertEquals(12, claimed.size(), "a run was claimed twice: " + claimed);
+        assertEquals(queued, new HashSet<>(claimed));
+    }
+
+    @Test
+    void claimAndEnqueueRejectBadArguments() {
+        assertThrows(IllegalArgumentException.class, () -> store().claim(" ", HOUR));
+        assertThrows(IllegalArgumentException.class, () -> store().claim("w1", Duration.ofSeconds(-1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> store().enqueue(spec(), Path.of("tasks/correct.yaml")));
     }
 }

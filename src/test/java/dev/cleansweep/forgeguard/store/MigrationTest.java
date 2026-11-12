@@ -1,74 +1,45 @@
 package dev.cleansweep.forgeguard.store;
 
-import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.MigrateResult;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * The migrations against a live PostgreSQL, both from nothing and on top of a
- * database that M1 already wrote to.
- *
- * <p>Each test migrates its own throwaway schema, so the developer's public
- * schema and its runs are never touched. Flyway gets its own non-pooled
- * connection source: it changes search_path while migrating, and that must not
- * leak into a pooled connection.
+ * database that M1 already wrote to. Each test migrates its own throwaway
+ * schema, so the developer's public schema and its runs are never touched.
  */
 @Tag("integration")
 class MigrationTest {
 
-    private final String schema = "fg_migration_"
-            + HexFormat.of().toHexDigits(ThreadLocalRandom.current().nextInt());
+    private final ScratchSchema scratch = new ScratchSchema();
 
-    private Flyway flyway(String target) {
-        var cfg = Flyway.configure()
-                .dataSource(Database.url(), Database.user(), Database.password())
-                .schemas(schema)
-                .locations(Database.MIGRATIONS);
-        if (target != null) {
-            cfg.target(target);
-        }
-        return cfg.load();
-    }
-
-    /** A plain connection with search_path set to this test's schema. */
     private Connection connect() throws SQLException {
-        Connection c = DriverManager.getConnection(Database.url(), Database.user(), Database.password());
-        try (Statement s = c.createStatement()) {
-            s.execute("SET search_path TO " + schema);
-        }
-        return c;
+        return scratch.dataSource().getConnection();
     }
 
     @AfterEach
     void dropSchema() throws SQLException {
-        // flyway.clean() is disabled by default, and dropping is all it would do here.
-        try (Connection c = DriverManager.getConnection(Database.url(), Database.user(), Database.password());
-             Statement s = c.createStatement()) {
-            s.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
-        }
+        scratch.close();
     }
 
     @Test
     void freshDatabaseAppliesV1ThenV2() throws SQLException {
-        MigrateResult first = flyway(null).migrate();
+        MigrateResult first = scratch.migrate();
 
         assertEquals(List.of("1", "2"), appliedVersions());
         assertTrue(first.success);
@@ -85,12 +56,12 @@ class MigrationTest {
             assertEquals("23514", e.getSQLState(), "expected a CHECK violation: " + e.getMessage());
         }
 
-        assertEquals(0, flyway(null).migrate().migrationsExecuted, "a second migrate must be a no-op");
+        assertEquals(0, scratch.migrate().migrationsExecuted, "a second migrate must be a no-op");
     }
 
     @Test
     void m1DatabaseUpgradesInPlace() throws SQLException {
-        flyway("1").migrate();
+        scratch.migrate("1");
         assertEquals(List.of("1"), appliedVersions());
 
         UUID done = UUID.randomUUID();
@@ -112,7 +83,7 @@ class MigrationTest {
                     """, stuck);
         }
 
-        assertEquals(1, flyway(null).migrate().migrationsExecuted);
+        assertEquals(1, scratch.migrate().migrationsExecuted);
         assertEquals(List.of("1", "2"), appliedVersions());
 
         try (Connection c = connect();
@@ -172,7 +143,7 @@ class MigrationTest {
                      FROM information_schema.columns
                      WHERE table_schema = ? AND table_name = 'runs'
                      """)) {
-            ps.setString(1, schema);
+            ps.setString(1, scratch.name);
             Map<String, String> out = new TreeMap<>();
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {

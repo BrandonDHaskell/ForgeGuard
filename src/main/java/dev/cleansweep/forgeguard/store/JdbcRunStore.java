@@ -9,8 +9,10 @@ import dev.cleansweep.forgeguard.verify.Outcome;
 
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.*;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -30,6 +32,19 @@ public final class JdbcRunStore implements RunStore {
 
     @Override
     public UUID create(TaskSpec spec) {
+        return insert(spec, null);
+    }
+
+    @Override
+    public UUID enqueue(TaskSpec spec, Path taskFile) {
+        if (taskFile == null || !taskFile.isAbsolute()) {
+            throw new IllegalArgumentException("task file must be an absolute path: " + taskFile);
+        }
+        return insert(spec, taskFile);
+    }
+
+    /** taskFile is null for a run this process executes itself, which no worker may claim. */
+    private UUID insert(TaskSpec spec, Path taskFile) {
         UUID runId = UUID.randomUUID();
         String specJson;
         try {
@@ -49,8 +64,8 @@ public final class JdbcRunStore implements RunStore {
             """;
         String insertRun = """
             INSERT INTO runs (run_id, task_id, state, verify_command, network_enabled,
-                              mem_limit_bytes, cpu_limit, pids_limit, timeout_seconds)
-            VALUES (?, ?, 'PENDING', ?, ?, ?, ?, ?, ?)
+                              mem_limit_bytes, cpu_limit, pids_limit, timeout_seconds, task_file)
+            VALUES (?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?)
             """;
 
         try (Connection c = ds.getConnection()) {
@@ -70,12 +85,86 @@ public final class JdbcRunStore implements RunStore {
                 r.setDouble(6, spec.limits().cpus());
                 r.setInt(7, spec.limits().pidsLimit());
                 r.setInt(8, spec.limits().timeoutSeconds());
+                r.setString(9, taskFile == null ? null : taskFile.toString());
                 r.executeUpdate();
             }
             c.commit();
             return runId;
         } catch (SQLException e) {
             throw new StoreException("cannot create run", e);
+        }
+    }
+
+    /**
+     * Picks the run and resets it in one UPDATE. SKIP LOCKED lets concurrent
+     * workers each take a different row instead of queueing on the same one.
+     * SET expressions read the row as it was before the update, so the attempt
+     * increment sees the old state. Lease times use the database clock, so
+     * workers on different machines agree on when a lease has expired.
+     *
+     * <p>Every per-attempt column is cleared on every claim. A first claim has
+     * nothing to clear; a reclaim must not keep a dead worker's evidence. The
+     * logs are deleted in the same transaction, so no reader ever sees one
+     * attempt's verdict columns beside another attempt's logs.
+     */
+    private static final String CLAIM = """
+            UPDATE runs SET
+                attempt = attempt + CASE WHEN state = 'CLAIMED' THEN 1 ELSE 0 END,
+                state = 'CLAIMED', claimed_by = ?, claimed_at = now(),
+                lease_expires_at = now() + make_interval(secs => ?),
+                base_commit = NULL, head_commit = NULL, diff_sha256 = NULL,
+                image_digest = NULL, sandbox = NULL,
+                producer_reported_success = NULL, producer_report = NULL,
+                exit_code = NULL, outcome = NULL, termination_reason = NULL,
+                started_at = NULL, finished_at = NULL, duration_ms = NULL
+            WHERE run_id = (
+                SELECT run_id FROM runs
+                WHERE task_file IS NOT NULL
+                  AND (state = 'PENDING' OR (state = 'CLAIMED' AND lease_expires_at <= now()))
+                ORDER BY created_at, run_id
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED)
+            RETURNING run_id, task_file, attempt, lease_expires_at
+            """;
+
+    @Override
+    public Optional<Claim> claim(String workerId, Duration lease) {
+        if (workerId == null || workerId.isBlank()) {
+            throw new IllegalArgumentException("worker id required");
+        }
+        if (lease == null || lease.isNegative()) {
+            throw new IllegalArgumentException("lease must not be negative: " + lease);
+        }
+        try (Connection c = ds.getConnection()) {
+            c.setAutoCommit(false);
+            try {
+                Claim claim = null;
+                try (PreparedStatement ps = c.prepareStatement(CLAIM)) {
+                    ps.setString(1, workerId);
+                    ps.setDouble(2, lease.toMillis() / 1000.0);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            claim = new Claim(rs.getObject("run_id", UUID.class),
+                                    Path.of(rs.getString("task_file")),
+                                    rs.getInt("attempt"),
+                                    ts(rs, "lease_expires_at"));
+                        }
+                    }
+                }
+                if (claim != null) {
+                    try (PreparedStatement ps = c.prepareStatement("DELETE FROM run_logs WHERE run_id = ?")) {
+                        ps.setObject(1, claim.runId());
+                        ps.executeUpdate();
+                    }
+                }
+                c.commit();
+                return Optional.ofNullable(claim);
+            } catch (SQLException e) {
+                c.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            throw new StoreException("cannot claim a run: " + e.getMessage(), e);
         }
     }
 
@@ -171,7 +260,7 @@ public final class JdbcRunStore implements RunStore {
         }
     }
 
-    /** Reads the stdout log back for the show command. */
+    @Override
     public String logs(UUID runId, String stream) {
         try (Connection c = ds.getConnection();
              PreparedStatement ps = c.prepareStatement(
