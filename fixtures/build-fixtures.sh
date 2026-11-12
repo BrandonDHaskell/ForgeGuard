@@ -28,3 +28,4 @@ build() {
 
 mkdir -p "$OUT"
 build intervals-java
+build intervals-python

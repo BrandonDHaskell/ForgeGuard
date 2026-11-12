@@ -30,3 +30,8 @@ target/
 .vscode/
 .DS_Store
 /workspaces/
+
+# Python fixture tooling
+.venv/
+__pycache__/
+.pytest_cache/
