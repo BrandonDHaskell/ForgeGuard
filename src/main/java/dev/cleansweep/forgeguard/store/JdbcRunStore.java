@@ -26,8 +26,25 @@ public final class JdbcRunStore implements RunStore {
     private static final ObjectMapper JSON = new ObjectMapper();
     private final DataSource ds;
 
+    /** Null for the plain store. Otherwise every write must still match this claim's worker and attempt. */
+    private final Claim fence;
+
     public JdbcRunStore(DataSource ds) {
+        this(ds, null);
+    }
+
+    private JdbcRunStore(DataSource ds, Claim fence) {
         this.ds = ds;
+        this.fence = fence;
+    }
+
+    /** Shares this store's pool. The fence is checked in each write's own statement, not up front. */
+    @Override
+    public RunStore fencedTo(Claim claim) {
+        if (claim == null) {
+            throw new IllegalArgumentException("claim required");
+        }
+        return new JdbcRunStore(ds, claim);
     }
 
     @Override
@@ -144,7 +161,7 @@ public final class JdbcRunStore implements RunStore {
                     ps.setDouble(2, lease.toMillis() / 1000.0);
                     try (ResultSet rs = ps.executeQuery()) {
                         if (rs.next()) {
-                            claim = new Claim(rs.getObject("run_id", UUID.class),
+                            claim = new Claim(rs.getObject("run_id", UUID.class), workerId,
                                     Path.of(rs.getString("task_file")),
                                     rs.getInt("attempt"),
                                     ts(rs, "lease_expires_at"));
@@ -174,6 +191,7 @@ public final class JdbcRunStore implements RunStore {
                 ps -> {
                     ps.setString(1, baseCommit);
                     ps.setObject(2, runId);
+                    return 2;
                 });
     }
 
@@ -191,6 +209,7 @@ public final class JdbcRunStore implements RunStore {
                     ps.setString(3, headCommit);
                     ps.setString(4, diffSha256);
                     ps.setObject(5, runId);
+                    return 5;
                 });
     }
 
@@ -207,26 +226,60 @@ public final class JdbcRunStore implements RunStore {
                     ps.setString(3, exec.termination().name());
                     ps.setLong(4, exec.durationMs());
                     ps.setObject(5, runId);
+                    return 5;
                 });
     }
 
+    /**
+     * An INSERT into run_logs does not lock the runs row, so on its own a
+     * worker that lost its lease could slip a log in between a reclaim's UPDATE
+     * and its DELETE of the old logs, and that log would survive into the new
+     * attempt. The FOR SHARE lock closes that gap. While it is held, a claim's
+     * FOR UPDATE SKIP LOCKED passes the run by. If a reclaim got there first,
+     * this waits for it to commit, then re-checks the fence and finds the run
+     * gone.
+     */
     @Override
     public void appendLog(UUID runId, String stream, String content) {
         if (content == null || content.isEmpty()) {
             return;
         }
-        update(runId, """
+        checkFencedRun(runId);
+        String lock = "SELECT 1 FROM runs WHERE run_id = ?" + (fence == null ? "" : FENCE) + " FOR SHARE";
+        String insert = """
                 INSERT INTO run_logs (run_id, stream, seq, content)
                 VALUES (?, ?, COALESCE((SELECT max(seq) + 1 FROM run_logs
                                         WHERE run_id = ? AND stream = ?), 0), ?)
-                """,
-                ps -> {
+                """;
+        try (Connection c = ds.getConnection()) {
+            c.setAutoCommit(false);
+            try {
+                try (PreparedStatement ps = c.prepareStatement(lock)) {
+                    ps.setObject(1, runId);
+                    bindFence(ps, 1);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            c.rollback();
+                            throw missing(runId);
+                        }
+                    }
+                }
+                try (PreparedStatement ps = c.prepareStatement(insert)) {
                     ps.setObject(1, runId);
                     ps.setString(2, stream);
                     ps.setObject(3, runId);
                     ps.setString(4, stream);
                     ps.setString(5, content);
-                });
+                    ps.executeUpdate();
+                }
+                c.commit();
+            } catch (SQLException e) {
+                c.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            throw new StoreException("cannot write run " + runId + ": " + e.getMessage(), e);
+        }
     }
 
     @Override
@@ -304,25 +357,59 @@ public final class JdbcRunStore implements RunStore {
         return t == null ? null : t.toInstant();
     }
 
+    /** Binds a statement's own parameters and returns how many it bound. */
     private interface Binder {
-        void bind(PreparedStatement ps) throws SQLException;
+        int bind(PreparedStatement ps) throws SQLException;
     }
+
+    /** Appended to a write's WHERE run_id = ? when this store is fenced. */
+    private static final String FENCE = " AND claimed_by = ? AND attempt = ?";
 
     /**
      * Every write targets exactly one existing run. An UPDATE that matches no row
      * succeeds in SQL, so it is checked here; otherwise evidence recorded against a
      * wrong id would vanish without an error.
+     *
+     * <p>When fenced, the fence is part of the UPDATE's own WHERE clause. The
+     * UPDATE locks the row and re-checks that clause against the latest version,
+     * so a write racing a reclaim either lands before it (and the reclaim then
+     * clears it) or matches no row after it.
      */
     private void update(UUID runId, String sql, Binder binder) {
+        checkFencedRun(runId);
+        String fenced = fence == null ? sql : sql.stripTrailing() + FENCE;
         try (Connection c = ds.getConnection();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            binder.bind(ps);
+             PreparedStatement ps = c.prepareStatement(fenced)) {
+            bindFence(ps, binder.bind(ps));
             if (ps.executeUpdate() == 0) {
-                throw new StoreException("no such run: " + runId, null);
+                throw missing(runId);
             }
         } catch (SQLException e) {
             throw new StoreException("cannot write run " + runId + ": " + e.getMessage(), e);
         }
+    }
+
+    /** A fenced store holds one run and writes to no other. */
+    private void checkFencedRun(UUID runId) {
+        if (fence != null && !fence.runId().equals(runId)) {
+            throw new IllegalArgumentException("this store is fenced to run " + fence.runId()
+                    + " and cannot write run " + runId);
+        }
+    }
+
+    /** Binds the fence after the statement's own parameters, if this store is fenced. */
+    private void bindFence(PreparedStatement ps, int bound) throws SQLException {
+        if (fence != null) {
+            ps.setString(bound + 1, fence.workerId());
+            ps.setInt(bound + 2, fence.attempt());
+        }
+    }
+
+    /** No row matched. For a fenced store the run existed when claimed, so the lease was lost. */
+    private RuntimeException missing(UUID runId) {
+        return fence != null
+                ? new LeaseLostException(fence)
+                : new StoreException("no such run: " + runId, null);
     }
 
     private static String sha256(String s) {

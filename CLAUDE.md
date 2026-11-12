@@ -58,7 +58,8 @@ If `git apply` fails, the outcome is `PATCH_REJECTED`. Any other `RuntimeExcepti
 - `claim(workerId, lease)` takes the oldest enqueued run that is `PENDING`, or `CLAIMED` with an expired lease. It is one `UPDATE ... FOR UPDATE SKIP LOCKED`, timed by the database clock.
 - Every claim nulls all per-attempt columns and deletes the run's logs in the same transaction. Only a reclaim increments `attempt`.
 - `JdbcRunStoreTest.everyRunsColumnIsClassified` fails when `runs` gains a column, until that column is put in its KEPT, LEASE or CLEARED set and the claim query is updated to match.
-- No worker loop exists yet (T4). Worker writes are not yet fenced by `claimed_by`/`attempt` (T3).
+- A worker writes through `store.fencedTo(claim)`. Its writes succeed only while the row still has that claim's `claimed_by` and `attempt`. After a reclaim they throw `LeaseLostException` and change nothing. An expired lease that nobody has reclaimed still counts as held. In JDBC, the fence is part of each UPDATE's WHERE clause, and `appendLog` takes a `FOR SHARE` lock on the runs row. `JdbcRunStoreTest`'s two `zombie*` tests check both against an in-flight reclaim.
+- No worker loop exists yet (T4).
 
 **Verdict classification (`MavenStrategy`).** Maven exits 1 for both compile errors and test failures, so the outcome is read from the log:
 - termination `TIMEOUT` → `TIMEOUT`

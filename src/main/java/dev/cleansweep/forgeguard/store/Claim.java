@@ -11,7 +11,10 @@ import java.util.UUID;
  * claim with attempt above 0 is a re-execution: the previous worker's lease ran
  * out before it recorded a verdict, and everything it wrote has been cleared.
  *
+ * <p>workerId and attempt together are the fence: RunStore.fencedTo(claim)
+ * accepts writes only while the run's row still carries both.
+ *
  * @param taskFile the task YAML the run was enqueued from, absolute, for the
  *                 worker to load with TaskSpecLoader
  */
-public record Claim(UUID runId, Path taskFile, int attempt, Instant leaseExpiresAt) {}
+public record Claim(UUID runId, String workerId, Path taskFile, int attempt, Instant leaseExpiresAt) {}

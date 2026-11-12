@@ -5,6 +5,7 @@ import dev.cleansweep.forgeguard.sandbox.ExecResult;
 import dev.cleansweep.forgeguard.sandbox.Termination;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import dev.cleansweep.forgeguard.store.Claim;
+import dev.cleansweep.forgeguard.store.LeaseLostException;
 import dev.cleansweep.forgeguard.store.RunRecord;
 import dev.cleansweep.forgeguard.store.RunState;
 import dev.cleansweep.forgeguard.store.RunStore;
@@ -75,31 +76,59 @@ public final class InMemoryRunStore implements RunStore {
             r.state = RunState.CLAIMED;
             r.claimedBy = workerId;
             r.leaseExpiresAt = now.plus(lease);
-            return Optional.of(new Claim(r.runId, r.taskFile, r.attempt, r.leaseExpiresAt));
+            return Optional.of(new Claim(r.runId, workerId, r.taskFile, r.attempt, r.leaseExpiresAt));
         }
         return Optional.empty();
     }
 
     @Override
+    public RunStore fencedTo(Claim claim) {
+        if (claim == null) {
+            throw new IllegalArgumentException("claim required");
+        }
+        return new Fenced(claim);
+    }
+
+    @Override
     public synchronized void recordWorkspace(UUID runId, String baseCommit) {
-        Row r = row(runId);
-        r.baseCommit = baseCommit;
-        r.startedAt = Instant.now();
+        writeWorkspace(row(runId), baseCommit);
     }
 
     @Override
     public synchronized void recordProducerResult(UUID runId, ProducerResult result,
                                                   String headCommit, String diffSha256) {
-        Row r = row(runId);
+        writeProducerResult(row(runId), result, headCommit, diffSha256);
+    }
+
+    @Override
+    public synchronized void recordVerdict(UUID runId, Outcome outcome, ExecResult exec) {
+        writeVerdict(row(runId), outcome, exec);
+    }
+
+    @Override
+    public synchronized void appendLog(UUID runId, String stream, String content) {
+        if (content == null || content.isEmpty()) {
+            return;
+        }
+        writeLog(row(runId), stream, content);
+    }
+
+    // The writes themselves, shared by this store and its fenced views. Callers
+    // hold this store's monitor and have already checked the row may be written.
+
+    private static void writeWorkspace(Row r, String baseCommit) {
+        r.baseCommit = baseCommit;
+        r.startedAt = Instant.now();
+    }
+
+    private static void writeProducerResult(Row r, ProducerResult result, String headCommit, String diffSha256) {
         r.producerReportedSuccess = result.reportedSuccess();
         r.producerReport = result.report();
         r.headCommit = headCommit;
         r.diffSha256 = diffSha256;
     }
 
-    @Override
-    public synchronized void recordVerdict(UUID runId, Outcome outcome, ExecResult exec) {
-        Row r = row(runId);
+    private static void writeVerdict(Row r, Outcome outcome, ExecResult exec) {
         r.state = RunState.DONE;
         r.outcome = outcome;
         r.exitCode = exec.exitCode();
@@ -108,12 +137,99 @@ public final class InMemoryRunStore implements RunStore {
         r.finishedAt = Instant.now();
     }
 
-    @Override
-    public synchronized void appendLog(UUID runId, String stream, String content) {
-        if (content == null || content.isEmpty()) {
-            return;
+    private static void writeLog(Row r, String stream, String content) {
+        r.logs.computeIfAbsent(stream, s -> new ArrayList<>()).add(content);
+    }
+
+    /**
+     * The view RunStore.fencedTo returns. It locks the same monitor as the store
+     * it came from, so a reclaim and a fenced write never interleave.
+     */
+    private final class Fenced implements RunStore {
+        private final Claim fence;
+
+        Fenced(Claim fence) {
+            this.fence = fence;
         }
-        row(runId).logs.computeIfAbsent(stream, s -> new ArrayList<>()).add(content);
+
+        /** The fence's row, if this claim still holds it. Caller holds the store's monitor. */
+        private Row held(UUID runId) {
+            if (!fence.runId().equals(runId)) {
+                throw new IllegalArgumentException("this store is fenced to run " + fence.runId()
+                        + " and cannot write run " + runId);
+            }
+            Row r = row(runId);
+            if (!fence.workerId().equals(r.claimedBy) || fence.attempt() != r.attempt) {
+                throw new LeaseLostException(fence);
+            }
+            return r;
+        }
+
+        @Override
+        public void recordWorkspace(UUID runId, String baseCommit) {
+            synchronized (InMemoryRunStore.this) {
+                writeWorkspace(held(runId), baseCommit);
+            }
+        }
+
+        @Override
+        public void recordProducerResult(UUID runId, ProducerResult result, String headCommit, String diffSha256) {
+            synchronized (InMemoryRunStore.this) {
+                writeProducerResult(held(runId), result, headCommit, diffSha256);
+            }
+        }
+
+        @Override
+        public void recordVerdict(UUID runId, Outcome outcome, ExecResult exec) {
+            synchronized (InMemoryRunStore.this) {
+                writeVerdict(held(runId), outcome, exec);
+            }
+        }
+
+        @Override
+        public void appendLog(UUID runId, String stream, String content) {
+            if (content == null || content.isEmpty()) {
+                return;
+            }
+            synchronized (InMemoryRunStore.this) {
+                writeLog(held(runId), stream, content);
+            }
+        }
+
+        @Override
+        public UUID create(TaskSpec spec) {
+            return InMemoryRunStore.this.create(spec);
+        }
+
+        @Override
+        public UUID enqueue(TaskSpec spec, Path taskFile) {
+            return InMemoryRunStore.this.enqueue(spec, taskFile);
+        }
+
+        @Override
+        public Optional<Claim> claim(String workerId, Duration lease) {
+            return InMemoryRunStore.this.claim(workerId, lease);
+        }
+
+        @Override
+        public RunStore fencedTo(Claim claim) {
+            return InMemoryRunStore.this.fencedTo(claim);
+        }
+
+        @Override
+        public String logs(UUID runId, String stream) {
+            return InMemoryRunStore.this.logs(runId, stream);
+        }
+
+        @Override
+        public Optional<RunRecord> find(UUID runId) {
+            return InMemoryRunStore.this.find(runId);
+        }
+
+        @Override
+        public List<RunRecord> recent(int limit) {
+            return InMemoryRunStore.this.recent(limit);
+        }
     }
 
     @Override
