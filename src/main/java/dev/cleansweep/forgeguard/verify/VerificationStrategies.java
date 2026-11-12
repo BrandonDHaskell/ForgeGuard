@@ -24,7 +24,7 @@ public final class VerificationStrategies {
 
     /** Every strategy the harness ships with. */
     public static VerificationStrategies builtIn() {
-        return new VerificationStrategies(List.of(new MavenStrategy()));
+        return new VerificationStrategies(List.of(new MavenStrategy(), new PytestStrategy()));
     }
 
     /** @throws IllegalArgumentException naming the known strategies, if {@code name} is not one */

@@ -26,6 +26,12 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
           cache: maven
+      # The pytest tasks run `python -m pytest`, so `python` must have pytest.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install pytest
+        run: python -m pip install pytest
       - name: Build fixture repo
         run: ./fixtures/build-fixtures.sh
       # The verification command runs `mvn -o`, so the fixture's own plugins and

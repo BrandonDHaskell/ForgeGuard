@@ -24,6 +24,11 @@ class VerificationStrategiesTest {
     }
 
     @Test
+    void builtInKnowsPytest() {
+        assertInstanceOf(PytestStrategy.class, VerificationStrategies.builtIn().get("pytest"));
+    }
+
+    @Test
     void looksUpByName() {
         var b = new Named("b");
         var strategies = new VerificationStrategies(List.of(new Named("a"), b));
