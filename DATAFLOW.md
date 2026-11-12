@@ -240,9 +240,9 @@ happens to store output.
 
 | Part | Fields |
 | --- | --- |
-| Identity | `run_id`, `task_id`, `created_at` |
-| Inputs | `tasks.spec_sha256`, `base_commit`, `head_commit`, `diff_sha256`, `producer_report` |
-| Environment | `verify_command`, `image_digest`, `network_enabled`, `mem_limit_bytes`, `cpu_limit`, `pids_limit`, `timeout_seconds` |
+| Identity | `run_id`, `task_id`, `attempt`, `created_at` |
+| Inputs | `task_file`, `tasks.spec_sha256`, `base_commit`, `head_commit`, `diff_sha256`, `producer_report` |
+| Environment | `sandbox`, `verify_command`, `image_digest`, `network_enabled`, `mem_limit_bytes`, `cpu_limit`, `pids_limit`, `timeout_seconds` |
 | Observations | `exit_code`, `termination_reason`, `duration_ms`, `run_logs` |
 | Decision | `producer_reported_success`, `outcome` |
 

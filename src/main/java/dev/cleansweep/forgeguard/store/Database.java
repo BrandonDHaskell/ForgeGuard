@@ -14,11 +14,23 @@ import java.sql.SQLException;
 /** Builds the connection pool and applies migrations. Configuration is environment only. */
 public final class Database {
 
+    /** Where the Flyway migrations live. Shared with MigrationTest so it applies the same files. */
+    static final String MIGRATIONS = "classpath:db/migration";
+
     public static DataSource connect() {
-        return connect(
-                env("FORGEGUARD_JDBC_URL", "jdbc:postgresql://localhost:5432/forgeguard"),
-                env("FORGEGUARD_DB_USER", "forgeguard"),
-                env("FORGEGUARD_DB_PASSWORD", "forgeguard"));
+        return connect(url(), user(), password());
+    }
+
+    static String url() {
+        return env("FORGEGUARD_JDBC_URL", "jdbc:postgresql://localhost:5432/forgeguard");
+    }
+
+    static String user() {
+        return env("FORGEGUARD_DB_USER", "forgeguard");
+    }
+
+    static String password() {
+        return env("FORGEGUARD_DB_PASSWORD", "forgeguard");
     }
 
     static DataSource connect(String url, String user, String pass) {
@@ -32,7 +44,7 @@ public final class Database {
         HikariDataSource ds = new HikariDataSource(cfg);
 
         try {
-            Flyway.configure().dataSource(ds).locations("classpath:db/migration").load().migrate();
+            Flyway.configure().dataSource(ds).locations(MIGRATIONS).load().migrate();
         } catch (FlywayException e) {
             ds.close();
             throw new DatabaseException("cannot migrate schema at " + redact(url) + ": " + e.getMessage(), e);
