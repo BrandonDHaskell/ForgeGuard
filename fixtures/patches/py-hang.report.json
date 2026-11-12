@@ -1,0 +1,6 @@
+{
+  "success": true,
+  "summary": "Skip the sort when the input is already ordered, which is the common case.",
+  "files_touched": ["intervals/merger.py"],
+  "tests_run": []
+}

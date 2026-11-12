@@ -1,0 +1,119 @@
+# T1 — V2 migration: `attempt`, `task_file`, `sandbox`
+
+## Context
+
+Milestone 2 turns `submit` into "queue a run" and adds workers that claim runs with leases (T2–T5). The `runs` table needs three columns that V1 lacks:
+
+| Column | Why it's needed | First reader/writer |
+| --- | --- | --- |
+| `attempt` | Reclaiming an expired lease increments it. The T6 crash test and PROPOSAL_TRACE expect a run that survived one `kill -9` to read `attempt = 1`, so the first execution is **0**. | T2 claim query, T6 |
+| `task_file` | A worker in another process has to rebuild the `LoadedTask`. `tasks.spec_json` holds the `TaskSpec` but not the report path, and not the resolved patch/report host paths. Storing the task YAML's absolute path lets the worker call `TaskSpecLoader.load` again. | T5 `submit` writes it, T4 worker reads it |
+| `sandbox` | Records which `Sandbox` actually executed the run, so the record says which limits were in force. This pairs with B7 (`bh/enforced-limits`), which NULLs the limits nothing enforces. | T4 worker / B7 `show` |
+
+"Done when" from the Finish Plan: **applies to both a fresh database and an M1 database.**
+
+Decisions you made:
+- **Schema and migration test only.** `RunRecord`, `JdbcRunStore` and `InMemoryRunStore` stay unchanged. T2 and T5 add reads and writes as they need them, the same way V1 shipped the lease columns before anything used them.
+- **Stuck M1 `PENDING` rows are left alone.** T2's claim query must filter on `task_file IS NOT NULL`. That is noted below as a T2 requirement.
+
+What I checked: none of Brandon's 9 pushed `bh/*` branches adds a migration, so `V2` is free. `bh/enforced-limits` edits only `JdbcRunStore.create` and DATAFLOW §8, so it doesn't overlap with this work.
+
+## Changes
+
+### 1. `src/main/resources/db/migration/V2__work_queue.sql` (new)
+
+```sql
+-- ForgeGuard M2: columns the work queue needs. Applies on top of V1 with
+-- existing M1 runs in place; V1 is never edited (Flyway checksums it).
+
+ALTER TABLE runs
+    -- 0 for the first execution. Only reclaiming an expired lease increments
+    -- it, so a run that survived one worker crash reads 1.
+    ADD COLUMN attempt   INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+    -- Absolute path of the task YAML this run was submitted from. A worker
+    -- reloads it for the spec and the producer's patch and report paths, which
+    -- tasks.spec_json does not hold. NULL on M1 runs, which never recorded it.
+    ADD COLUMN task_file TEXT,
+    -- The Sandbox that executed the run (e.g. 'local'), which determines which
+    -- limits were actually enforced. NULL until a worker executes the run.
+    ADD COLUMN sandbox   TEXT;
+
+-- M1 wired exactly one sandbox: ForgeGuardCli built LocalProcessSandbox.
+UPDATE runs SET sandbox = 'local';
+```
+
+Notes:
+- **One existing-data change: the `sandbox` backfill.** Every M1 run went through `ForgeGuardCli.Submit`, which hard-codes `new LocalProcessSandbox()`, so `'local'` is a fact about M1 rather than a guess. It also lets B7's `show` treat old rows the same as new ones. No verdict, state or limit column is touched. Dropping this `UPDATE` is a one-line change if you'd rather old rows stay NULL.
+- **`sandbox` has no default.** A default would claim a sandbox on rows where nothing recorded one. Rows created by today's synchronous `submit` between T1 and T4 will have `sandbox` NULL.
+- **No `CHECK` on `sandbox` values**, matching `outcome` and `termination_reason`. The vocabulary belongs to the sandbox side.
+- **No CHECK tying `PENDING` to `task_file`.** Today's `create()` doesn't write `task_file`, so that constraint would break `submit` until T5 lands.
+- **No new indexes.** V1's `runs_pending_idx` and `runs_lease_idx` already cover the claim query.
+
+### 2. `src/main/java/dev/cleansweep/forgeguard/store/Database.java` (small)
+
+Make the migration config reusable so the test runs exactly what production runs:
+- Add a package-private `static final String MIGRATIONS = "classpath:db/migration"` and use it in `connect(...)`.
+- Change `private static String env(...)` to package-private, so the test reads `FORGEGUARD_JDBC_URL`, `FORGEGUARD_DB_USER` and `FORGEGUARD_DB_PASSWORD` with the same defaults and blank handling.
+
+### 3. `src/test/java/dev/cleansweep/forgeguard/store/MigrationTest.java` (new, `@Tag("integration")`)
+
+Each test migrates a throwaway schema `fg_migration_<random hex>`, so the developer's `public` schema is never touched:
+- Flyway is built with `.dataSource(url, user, pass)`, which is Flyway's own non-pooled source, so its `search_path` changes can't leak into a Hikari pool. It also uses `.schemas(scratch)` and `.locations(Database.MIGRATIONS)`.
+- `@AfterEach` runs `DROP SCHEMA <scratch> CASCADE`. `flyway.clean()` is disabled by default in Flyway 11.
+
+Tests:
+- **`freshDatabaseAppliesV1ThenV2`**
+  - Migrate to latest.
+  - `flyway_schema_history` lists versions 1 and 2, both successful.
+  - `information_schema.columns` shows:
+    - `attempt`: integer, NOT NULL, default 0
+    - `task_file`: text, nullable
+    - `sandbox`: text, nullable
+  - Inserting `attempt = -1` is rejected.
+  - A second `migrate()` executes 0 migrations.
+- **`m1DatabaseUpgradesInPlace`** (the "M1 database" case)
+  - Migrate with `.target("1")`.
+  - Using `SET search_path`, insert one `tasks` row and two V1-shaped `runs` rows: one `DONE`/`TEST_FAIL`/exit 1, one stuck `PENDING`.
+  - Migrate to latest.
+  - Both rows have `attempt = 0`, `sandbox = 'local'` and `task_file` NULL.
+  - The DONE row's `outcome` and `exit_code` are unchanged.
+  - The PENDING row is still `PENDING`, per your decision.
+
+Existing writes still work on V2 without any extra test: `mvn verify` runs `JdbcRunStoreTest` (the full `RunStoreContractTest`) and `ForgeGuardCliIntegrationTest` against `public`. `Database.connect()` now migrates `public` to V2, so the unchanged INSERT/UPDATE code is exercised against the new schema.
+
+### 4. Docs (one-line edits)
+- `CLAUDE.md`, Schema paragraph: name V2's columns and say the next migration is `V3__`.
+- `DATAFLOW.md` §9 vocabulary table: add `attempt` to Identity, `task_file` to Inputs, and `sandbox` to Environment.
+
+## Requirements this hands to later tasks (for the PR description)
+- **T2:** the claim query must skip `task_file IS NULL`, so stuck M1 `PENDING` rows are never claimed. A reclaim does `attempt = attempt + 1`, and only a reclaim does.
+- **T5:** `submit` writes `task_file` as `taskFile.toAbsolutePath()`.
+- **T4/B7:** the worker writes `sandbox` when it executes.
+- **Brandon:** the next migration is `V3__`.
+
+## Verification
+1. `mvn -B test`: unit tests unchanged and green, with no database.
+2. `docker compose up -d postgres`, then:
+   - `mvn -B verify -Dit.test=MigrationTest` covers both "done when" cases.
+   - A full `mvn -B verify` adds the contract and CLI integration tests on a V2 `public` schema.
+3. Manual check on your real M1 dev database:
+   - `psql`: `SELECT version FROM flyway_schema_history` shows only `1`.
+   - Run `java -jar target/forgeguard-0.1.0-SNAPSHOT.jar list`; any command triggers the migration.
+   - `\d runs` shows the three columns.
+   - `SELECT sandbox, attempt, count(*) FROM runs GROUP BY 1,2` shows `local | 0`.
+   - The history now shows `2`.
+   - Running `list` again changes nothing.
+4. CI checks the fresh-database case on its own, since its PostgreSQL service starts empty.
+
+## Delivery
+Branch `tg/schema-v2` off `main`. The commit subject follows Brandon's M2 style: `T1: add attempt, task_file and sandbox columns (V2 migration)`. I'll commit, push and open the PR only after you've looked at the diff.
+
+---
+
+## As implemented (differences from the plan above)
+
+- Database.java: rather than making `env(...)` package-private, `connect()` now
+  calls three package-private methods, `url()`, `user()` and `password()`. The
+  test uses those, so the default URL and credentials exist in one place only.
+  `env` stays private. `MIGRATIONS` was added as planned.
+- Nothing has been committed or pushed. The work is uncommitted on branch `tg/schema-v2`.

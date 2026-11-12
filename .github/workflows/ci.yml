@@ -26,6 +26,12 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
           cache: maven
+      # The pytest tasks run `python -m pytest`, so `python` must have pytest.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install pytest
+        run: python -m pip install pytest
       - name: Build fixture repo
         run: ./fixtures/build-fixtures.sh
       # The verification command runs `mvn -o`, so the fixture's own plugins and
@@ -35,6 +41,13 @@ jobs:
         run: mvn -B -f /tmp/forgeguard-fixtures/intervals-java/pom.xml verify -Dmaven.test.failure.ignore=true
       - name: Build and test
         run: mvn -B verify
+        env:
+          FORGEGUARD_JDBC_URL: jdbc:postgresql://localhost:5432/forgeguard
+          FORGEGUARD_DB_USER: forgeguard
+          FORGEGUARD_DB_PASSWORD: forgeguard
+      # Grades the harness against demo/expected.tsv; fails on any mismatch.
+      - name: Demo against the answer key
+        run: ./demo/run-all.sh
         env:
           FORGEGUARD_JDBC_URL: jdbc:postgresql://localhost:5432/forgeguard
           FORGEGUARD_DB_USER: forgeguard

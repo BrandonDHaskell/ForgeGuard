@@ -33,7 +33,7 @@ class JGitWorkspaceProviderTest {
     }
 
     private static String expectedBase() throws IOException {
-        return Files.readString(Path.of("fixtures", "BASE_SHA.txt")).trim();
+        return Files.readString(Path.of("fixtures", "BASE_SHA.intervals-java.txt")).trim();
     }
 
     private static Set<String> leftoverWorkspaces() throws IOException {

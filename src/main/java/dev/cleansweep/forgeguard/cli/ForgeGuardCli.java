@@ -11,8 +11,8 @@ import dev.cleansweep.forgeguard.store.Database;
 import dev.cleansweep.forgeguard.store.JdbcRunStore;
 import dev.cleansweep.forgeguard.store.RunRecord;
 import dev.cleansweep.forgeguard.store.RunStore;
-import dev.cleansweep.forgeguard.verify.MavenStrategy;
 import dev.cleansweep.forgeguard.verify.Outcome;
+import dev.cleansweep.forgeguard.verify.VerificationStrategies;
 import dev.cleansweep.forgeguard.workspace.JGitWorkspaceProvider;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -94,7 +94,7 @@ public final class ForgeGuardCli implements Runnable {
             var runner = new VerificationRun(
                     new JGitWorkspaceProvider(),
                     new LocalProcessSandbox(),
-                    new MavenStrategy(),
+                    VerificationStrategies.builtIn(),
                     store,
                     new GitDiffInspector());
 
