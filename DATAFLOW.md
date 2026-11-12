@@ -43,7 +43,7 @@ test is the task.
 | --- | --- | --- | --- |
 | `correct` | `<` becomes `<=` | success: true | `PASS` |
 | `overclaim` | `<` becomes `<=`, and `Interval.extend` drops its `Math.max` | success: true | `TEST_FAIL` |
-| `tamper` | Deletes `mergesAdjacentIntervals` | success: true | `PASS` in M1, `PROTECTED_PATH_MODIFIED` in M2 |
+| `tamper` | Deletes `mergesAdjacentIntervals` | success: true | `PROTECTED_PATH_MODIFIED` (was `PASS` in M1, before the check was wired) |
 | `hang` | Adds a sort shortcut to `IntervalMerger` whose loop never increments | success: true | `TIMEOUT` |
 
 `overclaim` is the demo that matters. It genuinely fixes the adjacency bug, so
@@ -83,33 +83,41 @@ RunStore.recordProducerResult
   |                         UPDATE runs SET producer_reported_success=true,
   |                                         producer_report=..., diff_sha256=...
   v
-ProtectedPathCheck          M2 ONLY. globs: src/test/**, pom.xml
+ProtectedPathCheck          globs: src/test/**, pom.xml
   |                         no match -> continue
-  |                         match -> PROTECTED_PATH_MODIFIED, stop before executing
-  |                         In M1 this step does not run, so `tamper` reaches
-  |                         the sandbox and passes.
+  |                         match -> stderr log names the path,
+  |                                  PROTECTED_PATH_MODIFIED, stop before executing
   v
 MavenStrategy.verify        Sandbox.exec(ws, ["mvn","-B","-o","verify"], limits)
   |
   v
-DockerSandbox               docker create (hardened) ; docker cp ; docker start -a
+LocalProcessSandbox         host process in the workspace dir; timeout kills the tree
   |                         -> ExecResult(exitCode=1, stdout=..., EXITED, 41830ms)
   v
 MavenStrategy.classify      exit 1 + "BUILD FAILURE" + "Failures:" -> TEST_FAIL
   |
   v
+RunStore.appendLog          INSERT run_logs (stdout), INSERT run_logs (stderr)
+  v
 RunStore.recordVerdict      UPDATE runs SET outcome='TEST_FAIL', exit_code=1,
   |                                         termination_reason='EXITED', ...
-  |                         INSERT run_logs (stdout), INSERT run_logs (stderr)
   v
 Workspace.close             rm -rf /tmp/fg-ws-7c2e
 ```
 
 The protected-path check runs **before** the sandbox. A change that edits the
-tests is rejected without ever executing, so tampering cannot consume a container
-slot or produce a misleading green log.
+tests is rejected without ever executing, so tampering cannot reach the sandbox
+or produce a misleading green log.
 
-## 4. The container command, literally
+Logs are written before the verdict, so a run that has a verdict always has its
+logs.
+
+## 4. The container command (designed, not delivered)
+
+`DockerSandbox` was cut from Milestone 2 (see `PROPOSAL_TRACE.md`). This is the
+command it was designed to run, kept as the record of the intended isolation.
+Nothing below is in the execution path today; `runs.verify_command` holds the
+bare argv that `LocalProcessSandbox` ran.
 
 ```
 docker create --name forgeguard-1759... \
@@ -129,9 +137,9 @@ docker create --name forgeguard-1759... \
   timeout --signal=KILL 300s mvn -B -o verify
 ```
 
-This argument list is stored verbatim in `runs.verify_command`. The evidence and
-the thing that ran are the same data, which is the whole reason the docker CLI is
-invoked instead of a client library.
+As designed, this argument list would be stored verbatim in
+`runs.verify_command`, so the evidence and the thing that ran would be the same
+data. That is why the design calls the docker CLI rather than a client library.
 
 Two notes on the flags. `--network none` plus `mvn -o` means dependencies come
 from a cache copied in at `/cache`; a change introducing a new dependency fails
@@ -209,8 +217,8 @@ maven@sha256:8f0f...
 ```
 
 `runs.image_digest` exists in the schema for this and is currently unpopulated.
-Wiring it is an M2 task, roughly 30 minutes, and it belongs with `DockerSandbox`
-because there is no image to pin until containers are in the path.
+Wiring it belongs with `DockerSandbox`, because there is no image to pin until
+containers are in the path, so it left Milestone 2 with the Docker cut.
 
 What a fully reproducible record would pin:
 
@@ -224,7 +232,7 @@ What a fully reproducible record would pin:
 | network policy | NULL: not enforced; the verification run has the host's network |
 | container image digest | column exists, not populated (Docker cut) |
 | JDK and Maven versions | not recorded; implied by the image digest once pinned |
-| dependency cache identity | not recorded (M2, arrives with `--network none`) |
+| dependency cache identity | not recorded (only matters with `--network none`, cut with Docker) |
 | ForgeGuard version | not recorded |
 
 Stating this distinction is more useful than closing every gap. A verification
