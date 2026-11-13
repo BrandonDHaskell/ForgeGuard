@@ -13,10 +13,13 @@ import dev.cleansweep.forgeguard.store.RunRecord;
 import dev.cleansweep.forgeguard.store.RunStore;
 import dev.cleansweep.forgeguard.verify.Outcome;
 import dev.cleansweep.forgeguard.verify.VerificationStrategies;
+import dev.cleansweep.forgeguard.worker.Worker;
+import dev.cleansweep.forgeguard.worker.WorkerConfig;
 import dev.cleansweep.forgeguard.workspace.JGitWorkspaceProvider;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Model.CommandSpec;
+import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
 
@@ -34,7 +37,8 @@ import java.util.UUID;
  * fakes, so the output is checked with no Git, Docker, Maven, or PostgreSQL.
  */
 @Command(name = "forgeguard", mixinStandardHelpOptions = true,
-        subcommands = {ForgeGuardCli.Submit.class, ForgeGuardCli.Show.class, ForgeGuardCli.List.class})
+        subcommands = {ForgeGuardCli.Submit.class, ForgeGuardCli.Show.class, ForgeGuardCli.List.class,
+                ForgeGuardCli.WorkerCommand.class})
 public final class ForgeGuardCli implements Runnable {
 
     @Spec
@@ -185,6 +189,51 @@ public final class ForgeGuardCli implements Runnable {
                 out.printf("%-38s %-24s %-24s %s%n",
                         r.runId(), r.taskId(), r.outcome() == null ? r.state() : r.outcome(),
                         r.producerReportedSuccess() ? "success" : "failure");
+            }
+        }
+    }
+
+    @Command(name = "worker", description = {
+            "Claim queued runs and verify them, one at a time, until killed.",
+            "Settings come from FORGEGUARD_WORKER_ID, FORGEGUARD_LEASE_SECONDS,",
+            "FORGEGUARD_POLL_SECONDS and FORGEGUARD_MAX_TIMEOUT_SECONDS."})
+    static final class WorkerCommand implements Runnable {
+
+        @Option(names = "--drain", description = "Exit once the queue is empty instead of waiting for more runs.")
+        boolean drain;
+
+        @Spec
+        CommandSpec spec;
+
+        @Override
+        public void run() {
+            // Before connecting: a worker whose lease is too short refuses to start.
+            WorkerConfig config = WorkerConfig.fromEnv(System.getenv());
+            var store = new JdbcRunStore(Database.connect());
+            PrintWriter out = spec.commandLine().getOut();
+
+            Worker worker = new Worker(config, store, new TaskSpecLoader(),
+                    fenced -> new VerificationRun(
+                            new JGitWorkspaceProvider(),
+                            new LocalProcessSandbox(),
+                            VerificationStrategies.builtIn(),
+                            fenced,
+                            new GitDiffInspector()),
+                    task -> new ScriptedProducer(task.patchFile(), task.reportFile()),
+                    out);
+
+            out.printf("worker %s: lease %ds, poll %ds, max timeout %ds%s%n",
+                    config.workerId(), config.lease().toSeconds(), config.poll().toSeconds(),
+                    config.maxTimeoutSeconds(), drain ? ", draining" : "");
+            out.flush();
+            if (drain) {
+                worker.drain();
+                return;
+            }
+            try {
+                worker.run();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
     }

@@ -48,7 +48,7 @@ The package is `dev.cleansweep.forgeguard`. Start with `orchestrator/Verificatio
 6. `VerificationStrategy.verify` runs the command in a `Sandbox` and classifies the result.
 7. The verdict and the stdout/stderr logs are persisted.
 
-If `git apply` fails, the outcome is `PATCH_REJECTED`. Any other `RuntimeException` inside the run is caught and recorded as `HARNESS_ERROR`. It does not propagate.
+If `git apply` fails, the outcome is `PATCH_REJECTED`. Any other `RuntimeException` inside the run is caught and recorded as `HARNESS_ERROR`. If the store refuses that write too, as a fenced store does after a lost lease, the refusal propagates with the original failure attached as suppressed.
 
 **Single wiring point.** There is no DI framework. Every outside dependency (git, process execution, build system, database) sits behind an interface: `WorkspaceProvider`, `Sandbox`, `VerificationStrategy`, `RunStore`, `Producer`, and `DiffInspector`. `cli/ForgeGuardCli` is the only place that constructs the real implementations. Each picocli subcommand builds its collaborators in `run()` and delegates to a static method (`Submit.submit`, `Show.show`, `List.list`) that takes the collaborators and a `PrintWriter`. Unit tests call those static methods with fakes.
 
@@ -59,7 +59,22 @@ If `git apply` fails, the outcome is `PATCH_REJECTED`. Any other `RuntimeExcepti
 - Every claim nulls all per-attempt columns and deletes the run's logs in the same transaction. Only a reclaim increments `attempt`.
 - `JdbcRunStoreTest.everyRunsColumnIsClassified` fails when `runs` gains a column, until that column is put in its KEPT, LEASE or CLEARED set and the claim query is updated to match.
 - A worker writes through `store.fencedTo(claim)`. Its writes succeed only while the row still has that claim's `claimed_by` and `attempt`. After a reclaim they throw `LeaseLostException` and change nothing. An expired lease that nobody has reclaimed still counts as held. In JDBC, the fence is part of each UPDATE's WHERE clause, and `appendLog` takes a `FOR SHARE` lock on the runs row. `JdbcRunStoreTest`'s two `zombie*` tests check both against an in-flight reclaim.
-- No worker loop exists yet (T4).
+- **`forgeguard worker [--drain]`** (`worker/Worker`) claims one run at a time. It executes the run with `VerificationRun.execute(runId, ...)` through the fenced store. `--drain` exits once the queue is empty.
+  - Settings come from the environment:
+
+    | Variable | Default |
+    | --- | --- |
+    | `FORGEGUARD_WORKER_ID` | `worker-<pid>@<host>` (unique per process, which the fence relies on) |
+    | `FORGEGUARD_LEASE_SECONDS` | `360` |
+    | `FORGEGUARD_POLL_SECONDS` | `2` |
+    | `FORGEGUARD_MAX_TIMEOUT_SECONDS` | `300` |
+
+  - `WorkerConfig.fromEnv` refuses to start, before connecting to the database, unless the lease is longer than `FORGEGUARD_MAX_TIMEOUT_SECONDS` plus a 15s margin. The constructor doesn't apply that rule, so tests can use a zero lease to force a reclaim.
+  - Two kinds of run are closed as `HARNESS_ERROR` without running: a task whose timeout is over the ceiling, and a task file that won't load. Closing them keeps them from being reclaimed and retried forever.
+  - A `LeaseLostException` means another worker has the run. The worker logs it, abandons the run, and carries on. Any other exception ends the process, and the run is reclaimed when its lease expires.
+  - There is no graceful shutdown. Ctrl-C also signals the build's child process, so the run is abandoned rather than recorded as a broken build.
+  - Nothing enqueues runs until T5, because `submit` still calls `create()`. For now only tests put runs on the queue.
+  - `support/FakeRuns` builds a `VerificationRun` around whatever fenced store a worker hands it. `WorkerTest` uses the in-memory store, and `store/WorkerJdbcTest` runs the same two-worker drain on PostgreSQL in a scratch schema.
 
 **Verdict classification (`MavenStrategy`).** Maven exits 1 for both compile errors and test failures, so the outcome is read from the log:
 - termination `TIMEOUT` → `TIMEOUT`
