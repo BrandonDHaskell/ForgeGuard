@@ -1,0 +1,170 @@
+# T2 — Claim query with lease reclaim
+
+## Context
+
+Finish Plan T2: *"Claim query (`SKIP LOCKED`) picks up pending runs or claimed runs whose lease expired. Reclaiming clears the verdict, deletes the logs and increments `attempt`."*
+**Done when:** a reclaimed run keeps nothing from the first attempt.
+
+This is the core of proposal features 8 and 9 (work queue and lease reclaim). BUILD_PLAN.md states the hazard: *"the claim transaction must null every verdict column and delete that run's `run_logs` rows, or a record ends up with one worker's exit code and another's logs."* T1 (commit `42defcc`, already on `tg/claim_query`) added the columns this needs: `attempt`, `task_file`, `sandbox`.
+
+Your decision: **`claim()` goes on the shared `RunStore` interface**, implemented by both `JdbcRunStore` and `InMemoryRunStore` and specified in `RunStoreContractTest`. Per the team rule, this makes the PR a shared-interface PR that Brandon reviews.
+
+## Interface changes (`store/RunStore.java`)
+
+| Method | Why it's needed |
+| --- | --- |
+| `Optional<Claim> claim(String workerId, Duration lease)` | **The T2 feature.** Claims the oldest runnable run, or returns empty. |
+| `UUID enqueue(TaskSpec spec, Path taskFile)` | **Needed by the contract test.** A run is claimable only if it has a `task_file` (T1's rule). `create(TaskSpec)` can't record one, so without this the contract test can't make a claimable run through the interface. T5 then only has to switch `submit` to call it. |
+| `String logs(UUID runId, String stream)` | **Promoted from the two implementations.** `JdbcRunStore` and `InMemoryRunStore` already have the same public `logs` method. The reclaim contract test has to check, through the interface, that logs were deleted. |
+
+`create(TaskSpec)` stays as it is. It is the synchronous M1 path: no `task_file`, so a worker never claims the row. This also protects a `submit` that is still executing.
+
+New record `store/Claim.java`: `record Claim(UUID runId, Path taskFile, int attempt, Instant leaseExpiresAt)`. `attempt > 0` means the claim was a reclaim, because a row never returns to `PENDING`.
+
+Argument checks (`IllegalArgumentException`, the codebase's input-error type):
+- `workerId` must not be blank.
+- `lease` must not be negative. A zero lease is allowed: it expires immediately, which the tests use. T4 checks the real lease against the longest timeout.
+- `enqueue` rejects a relative `taskFile`. A worker started in a different directory would otherwise resolve it to a different file.
+
+## Claim semantics (identical in both implementations)
+
+1. **Which run:**
+   - Only rows with `task_file IS NOT NULL`, in state `PENDING`, or `CLAIMED` with `lease_expires_at <= now()`.
+   - Oldest first, by `created_at, run_id`.
+   - `<=` means a zero lease is expired by the next claim.
+2. **What a claim sets:**
+   - `state = 'CLAIMED'`, `claimed_by = workerId`, `claimed_at = now()`, `lease_expires_at = now() + lease`.
+   - `attempt + 1` only if the row was `CLAIMED` (a reclaim). A first claim leaves it at 0.
+3. **What a claim clears:** every per-attempt column, on every claim. A first claim has nothing to clear, so one code path covers both cases.
+   - Set to NULL: `base_commit`, `head_commit`, `diff_sha256`, `image_digest`, `sandbox`, `producer_reported_success`, `producer_report`, `exit_code`, `outcome`, `termination_reason`, `started_at`, `finished_at`, `duration_ms`.
+   - The run's `run_logs` rows are deleted.
+4. **What a claim keeps:**
+   - The run's inputs: `run_id`, `task_id`, `task_file`, `verify_command`, `created_at`.
+   - The limit columns, which `create` and `enqueue` write from the spec.
+5. **Clock:** lease time comes from the database clock, `now()`, for both setting and checking a lease, so clock skew between workers doesn't matter. `InMemoryRunStore` uses `Instant.now()`.
+
+## Changes
+
+### `store/JdbcRunStore.java`
+
+`claim`, in one transaction. The structure mirrors the `setAutoCommit(false)` pattern in `create()`, with an explicit rollback on failure:
+
+```sql
+UPDATE runs SET
+    attempt = attempt + CASE WHEN state = 'CLAIMED' THEN 1 ELSE 0 END,   -- SET reads the old row
+    state = 'CLAIMED', claimed_by = ?, claimed_at = now(),
+    lease_expires_at = now() + make_interval(secs => ?),
+    base_commit = NULL, head_commit = NULL, diff_sha256 = NULL, image_digest = NULL, sandbox = NULL,
+    producer_reported_success = NULL, producer_report = NULL, exit_code = NULL, outcome = NULL,
+    termination_reason = NULL, started_at = NULL, finished_at = NULL, duration_ms = NULL
+WHERE run_id = (
+    SELECT run_id FROM runs
+    WHERE task_file IS NOT NULL
+      AND (state = 'PENDING' OR (state = 'CLAIMED' AND lease_expires_at <= now()))
+    ORDER BY created_at, run_id
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED)
+RETURNING run_id, task_file, attempt, lease_expires_at
+```
+
+If a row comes back, the same transaction runs `DELETE FROM run_logs WHERE run_id = ?`, then commits. The existing `StoreException` and `ts()` helpers are reused. V1's partial indexes `runs_pending_idx` and `runs_lease_idx` already exist, so no new index is added. At demo scale the planner's choice doesn't matter.
+
+`enqueue`: `create`'s upsert-task-then-insert-run body moves into a private `insert(spec, taskFile)`. `taskFile` is nullable, and the INSERT gains a `task_file` column. `create` calls `insert(spec, null)`. `logs` gains `@Override`.
+
+### `src/test/.../support/InMemoryRunStore.java`
+
+- `Row` gains `taskFile`, `attempt`, `claimedBy`, `leaseExpiresAt`, and a `clearAttempt()` that nulls the same fields the SQL clears and empties `logs`.
+- `claim` is `synchronized` and walks `runs` in insertion order (oldest first), applying the rules above.
+- `enqueue` stores the task file. `create` leaves it null.
+
+### `src/test/.../store/RunStoreContractTest.java`
+
+New contract tests, run against both bindings:
+- `emptyQueueClaimsNothing`
+- `claimTakesTheOldestRunAndLeasesIt`
+  - Enqueue `a` and `b`. Claims return `a`, then `b`, then empty.
+  - Each claim has attempt 0, the right task file, and state `CLAIMED`.
+  - `leaseExpiresAt` is about now plus the lease, with a generous tolerance because the DB and JVM clocks differ.
+- `createdRunsAreNeverClaimed`: the M1 and synchronous rows from the T1 handoff.
+- `liveLeaseIsNotReclaimed`: a 1-hour lease, so a second claim returns empty.
+- `finishedRunsAreNeverClaimed`: claim with a zero lease, record a verdict, then a claim returns empty.
+- **`reclaimKeepsNothingFromTheFirstAttempt`** (the "done when" case)
+  - Enqueue, then claim as `w1` with a zero lease.
+  - The first attempt writes through the interface: `recordWorkspace`, `recordProducerResult`, and stdout and stderr logs. Under B2 ordering the logs come before the verdict, so a worker that died mid-run left exactly this.
+  - Claim as `w2`: same `runId`, `attempt == 1`.
+  - `find()` shows every evidence field null or false.
+  - `logs()` returns `""` for both streams.
+- `everyReclaimIncrementsAttempt`: a second expiry gives `attempt == 2`.
+- `concurrentClaimsNeverShareARun`: enqueue 12 runs. 4 threads claim until empty. The result is 12 claims of 12 distinct ids.
+- `claimAndEnqueueRejectBadArguments`: blank worker, negative lease, relative task file.
+
+The class Javadoc changes from "no test assumes the store starts empty" to "each test starts with an empty queue". A claim takes the oldest run in the whole store, so a shared database could hand a test someone else's run. The bindings guarantee the empty start: `InMemoryRunStoreTest` already gets a new store per test, and `JdbcRunStoreTest` moves to a scratch schema (next sections).
+
+### `src/test/.../store/ScratchSchema.java` (new test helper, package-private)
+
+T1's `MigrationTest` code for throwaway schemas moves into this reusable class:
+- `ScratchSchema.create()` picks a random `fg_test_<hex>` name.
+- `migrate()` and `migrate(String target)` run Flyway with `.schemas(name)` and `.locations(Database.MIGRATIONS)`, using `Database.url()`, `user()` and `password()`.
+- `dataSource()` is a lazily built Hikari pool with `setSchema(name)`, one per class as `JdbcRunStoreTest`'s comment requires.
+- `truncate()` runs `TRUNCATE tasks, runs, run_logs`.
+- `close()` closes the pool and drops the schema.
+
+`MigrationTest` switches to it with the same assertions.
+
+### `src/test/.../store/JdbcRunStoreTest.java`
+
+- **Bind to a scratch schema.** The `@BeforeAll` creates and migrates it, `@BeforeEach` truncates, and `@AfterAll` drops it. The static `db` field keeps its name so B7's new test in PR #23 merges cleanly. The `contract-*` cleanup becomes `close()`.
+- **New JDBC-only test `reclaimNullsEveryPerAttemptColumn`.**
+  - While the run is `CLAIMED`, SQL fills every per-attempt column, including `sandbox`, `image_digest` and `outcome`, which no store method writes before a verdict.
+  - After the reclaim, each of those columns is NULL and the input columns are unchanged.
+  - `lease_expires_at - claimed_at` equals the lease exactly.
+- **New `everyRunsColumnIsClassified`.** The `runs` columns in `information_schema` must equal exactly KEPT ∪ LEASE ∪ CLEARED, three lists written in the test. A future `V3` column then fails this test until someone decides whether a reclaim keeps it.
+
+### Small doc touches
+
+- `RunState` Javadoc: "the lease reaper" becomes "the claim query" (the Finish Plan merged the reaper into the claim).
+- `CLAUDE.md`:
+  - Replace "no work queue or lease" with: `RunStore.claim` exists, and there is no worker until T4.
+  - Note that `JdbcRunStoreTest` runs in a scratch schema.
+
+## Merge coordination (for the PR description)
+
+- **B2, PR #17:** its `VerificationRunTest.RecordingStore implements RunStore` stops compiling once the interface grows. If #17 merges first, which is likely, I rebase T2 onto `main` and add three one-line delegations (`enqueue`, `claim`, `logs`) to `RecordingStore`. If T2 merges first, B2 needs the same three lines.
+- **B7, PR #23:** edits the INSERT in `JdbcRunStore.create`, which `insert(...)` also changes. The resolution is mechanical: B7's column list plus `task_file`.
+- **Stacking:** `tg/claim_query` sits on T1's commit. Open T1's PR (`tg/v2_migration`) first, and point T2's PR at it until it merges.
+
+## Handoffs to later tasks
+
+- **T3:** a worker whose lease expired can still write. Guard every write (`recordWorkspace`, `recordProducerResult`, `recordVerdict`, `appendLog`) with `WHERE run_id = ? AND claimed_by = ? AND attempt = ?`. `Claim.attempt` works as a fencing token, which still holds if one worker id reclaims its own expired run.
+- **T4:** there is no lease renewal by design, so the worker's lease must exceed the longest timeout plus a margin. The worker loads `Claim.taskFile` with `TaskSpecLoader`. `VerificationRun` must also be able to run an existing run instead of calling `create()`.
+- **T5:** `submit` calls `enqueue(spec, taskFile.toAbsolutePath())`.
+
+## Verification
+
+1. `mvn -B test`: the whole contract, claim tests included, runs against `InMemoryRunStore` without a database.
+2. `docker compose up -d postgres`, then:
+   - `mvn -B verify -Dit.test='JdbcRunStoreTest,MigrationTest'`: the JDBC binding, the column-level reclaim check, and the 12-run concurrency test, all in scratch schemas.
+   - A full `mvn -B verify`. `ForgeGuardCliIntegrationTest` still uses `public`, so this migrates your dev database to V2 if it isn't already.
+3. Afterwards, `SELECT nspname FROM pg_namespace WHERE nspname LIKE 'fg_%'` returns nothing, showing no scratch schemas were left behind.
+
+## Not part of T2: noticed on the T1 commit (`42defcc`, pushed as `tg/v2_migration`)
+
+I won't touch any of these without a separate go-ahead. Fixing them means rewriting a pushed branch.
+- The subject reads `V2 migration adding ,  and  columns | 30m | ...`. The shell swallowed the backticked words in the message.
+- It also commits `CONTEXT/` (the Finish Plan, Class Guide and T1 plan text) and `CLAUDE.md`. Is that intended?
+- Your git identity has literal braces: `{tmgeorge2633}` / `{tmgeorge2@dons.usfca.edu}`. GitHub won't link these commits to your account.
+
+---
+
+## As implemented (differences from the plan above)
+
+- Verification step 2: I did not run the full `mvn -B verify`.
+  ForgeGuardCliIntegrationTest connects to `public`, which would migrate your
+  dev database from V1 to V2, and that before/after check was left for you in
+  T1. The tests that cover T2 ran and passed:
+    - `mvn -B test`: 61 unit tests, including all 18 contract tests against InMemoryRunStore.
+    - `mvn -B verify -Dit.test='JdbcRunStoreTest,MigrationTest'`: 23 + 2 tests,
+      all in scratch schemas. Afterwards no `fg_%` schemas were left and
+      `public` was still at version 1.
+- ScratchSchema has no `create()` factory. Tests call `new ScratchSchema()`.
+- Nothing has been committed or pushed. The work is uncommitted on branch `tg/claim_query`.

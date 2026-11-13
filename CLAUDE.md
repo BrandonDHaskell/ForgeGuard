@@ -52,7 +52,13 @@ If `git apply` fails, the outcome is `PATCH_REJECTED`. Any other `RuntimeExcepti
 
 **Single wiring point.** There is no DI framework. Every outside dependency (git, process execution, build system, database) sits behind an interface: `WorkspaceProvider`, `Sandbox`, `VerificationStrategy`, `RunStore`, `Producer`, and `DiffInspector`. `cli/ForgeGuardCli` is the only place that constructs the real implementations. Each picocli subcommand builds its collaborators in `run()` and delegates to a static method (`Submit.submit`, `Show.show`, `List.list`) that takes the collaborators and a `PrintWriter`. Unit tests call those static methods with fakes.
 
-**Test doubles** live in `src/test/java/.../support/`. `InMemoryRunStore` needs no PostgreSQL. `FakeWorkspace` needs no git. `CannedSandbox` returns trimmed real Maven logs, so `MavenStrategy` classifies them as it would a live build. `RunStoreContractTest` is the abstract spec that every `RunStore` must pass. `InMemoryRunStoreTest` and `JdbcRunStoreTest` subclass it. A change to `RunStore` behavior goes in the contract test so both bindings stay interchangeable. The contract and CLI integration tests use `contract-*` and `cli-test-*` task-id prefixes and never assume an empty database.
+**Test doubles** live in `src/test/java/.../support/`. `InMemoryRunStore` needs no PostgreSQL. `FakeWorkspace` needs no git. `CannedSandbox` returns trimmed real Maven logs, so `MavenStrategy` classifies them as it would a live build. `RunStoreContractTest` is the abstract spec that every `RunStore` must pass. `InMemoryRunStoreTest` and `JdbcRunStoreTest` subclass it. A change to `RunStore` behavior goes in the contract test so both bindings stay interchangeable. Each contract test needs an empty store, because `claim()` takes the oldest runnable run in the whole store. `InMemoryRunStoreTest` gets a new store per test. `JdbcRunStoreTest` and `MigrationTest` run in throwaway PostgreSQL schemas (`store/ScratchSchema`), never in `public`. `ForgeGuardCliIntegrationTest` still uses `public` and cleans up its `cli-test-*` rows.
+
+**Work queue (`RunStore.claim`).** `enqueue(spec, taskFile)` creates a run for a worker. `create(spec)` is the synchronous path: it records no `task_file`, so no worker ever claims it.
+- `claim(workerId, lease)` takes the oldest enqueued run that is `PENDING`, or `CLAIMED` with an expired lease. It is one `UPDATE ... FOR UPDATE SKIP LOCKED`, timed by the database clock.
+- Every claim nulls all per-attempt columns and deletes the run's logs in the same transaction. Only a reclaim increments `attempt`.
+- `JdbcRunStoreTest.everyRunsColumnIsClassified` fails when `runs` gains a column, until that column is put in its KEPT, LEASE or CLEARED set and the claim query is updated to match.
+- No worker loop exists yet (T4). Worker writes are not yet fenced by `claimed_by`/`attempt` (T3).
 
 **Verdict classification (`MavenStrategy`).** Maven exits 1 for both compile errors and test failures, so the outcome is read from the log:
 - termination `TIMEOUT` → `TIMEOUT`
@@ -80,14 +86,14 @@ Don't add anything nondeterministic to the producer path. A live LLM producer is
 
 **Errors at the CLI.** `IllegalArgumentException` is this codebase's input-error type. Along with `Database.DatabaseException`, it prints as a single `forgeguard: ...` line with a non-zero exit. Any other exception reaching picocli is a bug and prints in full.
 
-**Schema** is in `src/main/resources/db/migration/` (Flyway). Applied migrations are checksummed, so never edit one: schema changes go in the next file, `V3__...`. `V2__work_queue.sql` adds `runs.attempt` (0 for the first execution; only a lease reclaim increments it), `task_file` (absolute path of the submitted task YAML, so a worker can reload it; NULL on M1 runs), and `sandbox` (which `Sandbox` executed the run; M1 rows are backfilled `'local'`). The `runs` columns `claimed_by`, `claimed_at`, `lease_expires_at`, and `image_digest`, plus the three V2 columns, exist but nothing reads or writes them yet. `MigrationTest` migrates throwaway schemas to check both a fresh database and an upgrade of an M1 database.
+**Schema** is in `src/main/resources/db/migration/` (Flyway). Applied migrations are checksummed, so never edit one: schema changes go in the next file, `V3__...`. `V2__work_queue.sql` adds `runs.attempt` (0 for the first execution; only a lease reclaim increments it), `task_file` (absolute path of the submitted task YAML, so a worker can reload it; NULL on M1 runs), and `sandbox` (which `Sandbox` executed the run; M1 rows are backfilled `'local'`). `enqueue` writes `task_file`, and the claim query writes the lease columns and `attempt`. Nothing writes `image_digest` or `sandbox` yet. `MigrationTest` migrates throwaway schemas to check both a fresh database and an upgrade of an M1 database.
 
 ## M1 limits to be aware of
 
 - `DockerSandbox` and `ProtectedPathCheck` exist in the tree but are **not wired in**. Verification runs as a host process with the user's privileges, network, and `~/.m2`. `LocalProcessSandbox` enforces only a wall-clock timeout, and the `limits` block's memory, CPU, pids, and network values are not enforced.
 - Because protected paths are not checked, `tamper` (which deletes the failing test) gives `PASS`. Both `tamper.patch` and `hang.patch` edit `src/test/`, so once `ProtectedPathCheck` is wired in, `hang` will also be rejected unless its loop moves into main code.
 - `GitDiffInspector` runs a plain `git diff` with no staging, so files the producer *creates* (untracked) are missing from the touched paths and the hash.
-- There is no work queue or lease. `submit` runs one attempt synchronously, so `RunState.CLAIMED` is unused.
+- The claim query exists, but nothing calls it yet. `submit` still runs one attempt synchronously through `create()`, and there is no `worker` command.
 
 Expected fixture verdicts: `correct` → `PASS`, `overclaim` → `TEST_FAIL` (the disagreement demo), `hang` → `TIMEOUT`, `tamper` → `PASS` in M1 and `PROTECTED_PATH_MODIFIED` once the check is wired.
 

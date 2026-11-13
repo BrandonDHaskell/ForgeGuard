@@ -4,11 +4,14 @@ import dev.cleansweep.forgeguard.producer.ProducerResult;
 import dev.cleansweep.forgeguard.sandbox.ExecResult;
 import dev.cleansweep.forgeguard.sandbox.Termination;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
+import dev.cleansweep.forgeguard.store.Claim;
 import dev.cleansweep.forgeguard.store.RunRecord;
 import dev.cleansweep.forgeguard.store.RunState;
 import dev.cleansweep.forgeguard.store.RunStore;
 import dev.cleansweep.forgeguard.verify.Outcome;
 
+import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -25,14 +28,56 @@ import java.util.UUID;
  */
 public final class InMemoryRunStore implements RunStore {
 
-    /** In creation order; recent() reads it backwards. */
+    /** In creation order; recent() reads it backwards, and claim() takes the oldest first. */
     private final SequencedMap<UUID, Row> runs = new LinkedHashMap<>();
 
     @Override
     public synchronized UUID create(TaskSpec spec) {
+        return insert(spec, null);
+    }
+
+    @Override
+    public synchronized UUID enqueue(TaskSpec spec, Path taskFile) {
+        if (taskFile == null || !taskFile.isAbsolute()) {
+            throw new IllegalArgumentException("task file must be an absolute path: " + taskFile);
+        }
+        return insert(spec, taskFile);
+    }
+
+    private UUID insert(TaskSpec spec, Path taskFile) {
         UUID runId = UUID.randomUUID();
-        runs.put(runId, new Row(runId, spec.taskId(), String.join(" ", spec.verifyCommand())));
+        runs.put(runId, new Row(runId, spec.taskId(), String.join(" ", spec.verifyCommand()), taskFile));
         return runId;
+    }
+
+    /** The same rules as JdbcRunStore's claim query, with the JVM clock in place of the database's. */
+    @Override
+    public synchronized Optional<Claim> claim(String workerId, Duration lease) {
+        if (workerId == null || workerId.isBlank()) {
+            throw new IllegalArgumentException("worker id required");
+        }
+        if (lease == null || lease.isNegative()) {
+            throw new IllegalArgumentException("lease must not be negative: " + lease);
+        }
+        Instant now = Instant.now();
+        for (Row r : runs.values()) {
+            if (r.taskFile == null) {
+                continue;
+            }
+            boolean expired = r.state == RunState.CLAIMED && !r.leaseExpiresAt.isAfter(now);
+            if (r.state != RunState.PENDING && !expired) {
+                continue;
+            }
+            if (expired) {
+                r.attempt++;
+            }
+            r.clearAttempt();
+            r.state = RunState.CLAIMED;
+            r.claimedBy = workerId;
+            r.leaseExpiresAt = now.plus(lease);
+            return Optional.of(new Claim(r.runId, r.taskFile, r.attempt, r.leaseExpiresAt));
+        }
+        return Optional.empty();
     }
 
     @Override
@@ -81,7 +126,7 @@ public final class InMemoryRunStore implements RunStore {
         return runs.sequencedValues().reversed().stream().limit(limit).map(Row::toRecord).toList();
     }
 
-    /** Same result as JdbcRunStore.logs: the stream's chunks joined in append order. */
+    @Override
     public synchronized String logs(UUID runId, String stream) {
         Row r = runs.get(runId);
         return r == null ? "" : String.join("", r.logs.getOrDefault(stream, List.of()));
@@ -99,8 +144,12 @@ public final class InMemoryRunStore implements RunStore {
         final UUID runId;
         final String taskId;
         final String verifyCommand;
+        final Path taskFile;
         final Map<String, List<String>> logs = new HashMap<>();
         RunState state = RunState.PENDING;
+        int attempt;
+        String claimedBy;
+        Instant leaseExpiresAt;
         String baseCommit;
         String headCommit;
         String diffSha256;
@@ -113,10 +162,27 @@ public final class InMemoryRunStore implements RunStore {
         Instant finishedAt;
         Long durationMs;
 
-        Row(UUID runId, String taskId, String verifyCommand) {
+        Row(UUID runId, String taskId, String verifyCommand, Path taskFile) {
             this.runId = runId;
             this.taskId = taskId;
             this.verifyCommand = verifyCommand;
+            this.taskFile = taskFile;
+        }
+
+        /** Everything an attempt records. A claim starts from none of it. */
+        void clearAttempt() {
+            baseCommit = null;
+            headCommit = null;
+            diffSha256 = null;
+            producerReportedSuccess = false;
+            producerReport = null;
+            exitCode = null;
+            outcome = null;
+            termination = null;
+            startedAt = null;
+            finishedAt = null;
+            durationMs = null;
+            logs.clear();
         }
 
         RunRecord toRecord() {
