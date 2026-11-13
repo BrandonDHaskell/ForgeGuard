@@ -26,7 +26,8 @@ import java.util.UUID;
  * <p>The sequence is fixed and the ordering is load-bearing:
  *
  * <ol>
- *   <li>persist the run as PENDING, so a crash after this point is recoverable
+ *   <li>persist the run as PENDING, so a crash after this point is recoverable,
+ *       or take a run that already exists, such as one a worker has claimed
  *   <li>provision a clean workspace at the resolved base commit
  *   <li>let the producer mutate it, and record what it claims
  *   <li>diff the workspace and reject protected-path edits BEFORE executing
@@ -37,6 +38,10 @@ import java.util.UUID;
  * <p>Step 4 precedes step 5 deliberately. A change that edits the tests is
  * rejected without ever being run, so tampering cannot consume a container slot
  * or produce a misleading green log.
+ *
+ * <p>The class knows nothing about workers or leases. A worker passes a store
+ * that only accepts writes while it holds the run, and any write that store
+ * refuses ends the attempt by propagating out of execute.
  */
 public final class VerificationRun {
 
@@ -71,7 +76,35 @@ public final class VerificationRun {
     public UUID execute(TaskSpec spec, Producer producer) {
         VerificationStrategy strategy = strategies.get(spec.strategy());
         UUID runId = store.create(spec);
+        verify(runId, spec, producer, strategy);
+        return runId;
+    }
 
+    /**
+     * Runs the same sequence against a run that already exists, such as one a
+     * worker has claimed, and records everything against runId. Nothing is
+     * created.
+     *
+     * <p>Unlike {@link #execute(TaskSpec, Producer)}, an unknown strategy does
+     * not throw: the run already exists, so it gets a HARNESS_ERROR verdict with
+     * the reason as its stderr log, rather than staying runnable forever.
+     *
+     * <p>If the store refuses a write, the attempt is recorded as HARNESS_ERROR.
+     * If it refuses that too, as a store fenced to a lost lease does, the
+     * exception propagates, with the original failure attached as suppressed.
+     */
+    public void execute(UUID runId, TaskSpec spec, Producer producer) {
+        VerificationStrategy strategy;
+        try {
+            strategy = strategies.get(spec.strategy());
+        } catch (IllegalArgumentException e) {
+            reject(runId, Outcome.HARNESS_ERROR, e.getMessage());
+            return;
+        }
+        verify(runId, spec, producer, strategy);
+    }
+
+    private void verify(UUID runId, TaskSpec spec, Producer producer, VerificationStrategy strategy) {
         try (Workspace ws = workspaces.provision(spec)) {
             store.recordWorkspace(runId, ws.baseCommit());
 
@@ -80,7 +113,7 @@ public final class VerificationRun {
                 claim = producer.run(ws);
             } catch (ScriptedProducer.PatchRejectedException e) {
                 reject(runId, Outcome.PATCH_REJECTED, e.getMessage());
-                return runId;
+                return;
             }
 
             DiffInspector.Diff diff = diffs.inspect(ws);
@@ -91,7 +124,7 @@ public final class VerificationRun {
             if (violation.isPresent()) {
                 reject(runId, Outcome.PROTECTED_PATH_MODIFIED,
                         "protected path modified: " + violation.get());
-                return runId;
+                return;
             }
 
             var verification = strategy.verify(ws, sandbox, spec);
@@ -101,11 +134,14 @@ public final class VerificationRun {
             store.appendLog(runId, "stdout", verification.evidence().stdout());
             store.appendLog(runId, "stderr", verification.evidence().stderr());
             store.recordVerdict(runId, verification.outcome(), verification.evidence());
-            return runId;
 
         } catch (RuntimeException e) {
-            store.recordVerdict(runId, Outcome.HARNESS_ERROR, harnessNote(e.toString()));
-            return runId;
+            try {
+                store.recordVerdict(runId, Outcome.HARNESS_ERROR, harnessNote(e.toString()));
+            } catch (RuntimeException refused) {
+                refused.addSuppressed(e);
+                throw refused;
+            }
         }
     }
 
