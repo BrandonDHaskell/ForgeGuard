@@ -164,6 +164,27 @@ public final class JdbcRunStoreTest extends RunStoreContractTest {
         }
     }
 
+    /** LocalProcessSandbox enforces only the timeout, so the row must not claim more. */
+    @Test
+    void onlyTheEnforcedTimeoutIsRecorded() throws SQLException {
+        UUID id = store.create(spec());
+
+        try (Connection c = db.getConnection();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT timeout_seconds, network_enabled, mem_limit_bytes, cpu_limit, pids_limit
+                     FROM runs WHERE run_id = ?
+                     """)) {
+            ps.setObject(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals(Limits.DEFAULTS.timeoutSeconds(), rs.getInt("timeout_seconds"));
+                for (String unenforced : List.of("network_enabled", "mem_limit_bytes", "cpu_limit", "pids_limit")) {
+                    assertNull(rs.getObject(unenforced), unenforced + " must be NULL, not a claimed limit");
+                }
+            }
+        }
+    }
+
     @Test
     void sameTaskTwiceIsTwoRunsAndOneTaskRow() throws SQLException {
         TaskSpec spec = spec();

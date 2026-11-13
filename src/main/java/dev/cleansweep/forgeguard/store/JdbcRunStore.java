@@ -69,9 +69,8 @@ public final class JdbcRunStore implements RunStore {
         // network or a 2 GB cap that nothing applied. The requested values are
         // still in tasks.spec_json.
         String insertRun = """
-            INSERT INTO runs (run_id, task_id, state, verify_command, network_enabled,
-                              mem_limit_bytes, cpu_limit, pids_limit, timeout_seconds, task_file)
-            VALUES (?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO runs (run_id, task_id, state, verify_command, timeout_seconds, task_file)
+            VALUES (?, ?, 'PENDING', ?, ?, ?)
             """;
 
         try (Connection c = ds.getConnection()) {
@@ -86,12 +85,8 @@ public final class JdbcRunStore implements RunStore {
                 r.setObject(1, runId);
                 r.setString(2, spec.taskId());
                 r.setString(3, String.join(" ", spec.verifyCommand()));
-                r.setBoolean(4, spec.limits().networkEnabled());
-                r.setLong(5, spec.limits().memoryBytes());
-                r.setDouble(6, spec.limits().cpus());
-                r.setInt(7, spec.limits().pidsLimit());
-                r.setInt(8, spec.limits().timeoutSeconds());
-                r.setString(9, taskFile == null ? null : taskFile.toString());
+                r.setInt(4, spec.limits().timeoutSeconds());
+                r.setString(5, taskFile == null ? null : taskFile.toString());
                 r.executeUpdate();
             }
             c.commit();

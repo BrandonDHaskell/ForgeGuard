@@ -4,6 +4,7 @@ import dev.cleansweep.forgeguard.producer.ProducerResult;
 import dev.cleansweep.forgeguard.sandbox.ExecResult;
 import dev.cleansweep.forgeguard.spec.Limits;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
+import dev.cleansweep.forgeguard.store.Claim;
 import dev.cleansweep.forgeguard.store.RunRecord;
 import dev.cleansweep.forgeguard.store.RunStore;
 import dev.cleansweep.forgeguard.support.CannedSandbox;
@@ -13,10 +14,12 @@ import dev.cleansweep.forgeguard.verify.MavenStrategy;
 import dev.cleansweep.forgeguard.verify.Outcome;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -104,5 +107,20 @@ class VerificationRunTest {
         public List<RunRecord> recent(int limit) {
             return delegate.recent(limit);
         }
+
+         @Override
+          public UUID enqueue(TaskSpec spec, Path taskFile) {
+              return delegate.enqueue(spec, taskFile);
+          }
+
+          @Override
+          public Optional<Claim> claim(String workerId, Duration lease) {
+              return delegate.claim(workerId, lease);
+          }
+
+          @Override
+          public String logs(UUID runId, String stream) {
+              return delegate.logs(runId, stream);
+          }
     }
 }
