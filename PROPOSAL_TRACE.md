@@ -25,8 +25,8 @@ finish plan (B for Brandon, T for Timothy) that delivers it.
 
 | # | Feature | Status | Class | Tests | Demo |
 | --- | --- | --- | --- | --- | --- |
-| 8 | Work queue with `SELECT ... FOR UPDATE SKIP LOCKED` and leases | Pending (T1, T2, T4) | | Concurrency test, 3 workers and 12 runs each claimed once (T6) | 4 |
-| 9 | Lease expiry and reclaim, idempotent re-execution | Pending (T2, T3) | Reclaim is part of the claim query, no separate reaper | Crash test, `kill -9` on a worker leaves one verdict with `attempt = 1` (T6) | 4 |
+| 8 | Work queue with `SELECT ... FOR UPDATE SKIP LOCKED` and leases | Done | `RunStore.claim`, `JdbcRunStore`, `Worker`, `V2__work_queue.sql` | `RunStoreContractTest` (claim and lease tests), `WorkerJdbcTest.threeWorkersAndTwelveRunsEachClaimedOnce` | 4 |
+| 9 | Lease expiry and reclaim, idempotent re-execution | Done. Reclaim is part of the claim query, with no separate reaper | `RunStore.claim`, `RunStore.fencedTo`, `LeaseLostException` | `WorkerCrashTest.killDashNineMidRunLeavesOneVerdictWithAttemptOne`, `JdbcRunStoreTest.reclaimNullsEveryPerAttemptColumn`, `RunStoreContractTest.lostLeaseCannotOverwriteTheNewResult` | 4 |
 
 ### Milestone 2 scope
 
@@ -35,9 +35,9 @@ and the pytest strategy with a Python fixture.
 
 | Item | Status | Where |
 | --- | --- | --- |
-| Database-backed work queue | Pending | Feature 8 |
-| Multi-worker configuration | Pending (T4) | `worker` command; lease and poll settings from the environment |
-| Lease expiry and reclaim | Pending | Feature 9 |
+| Database-backed work queue | Done | Feature 8 |
+| Multi-worker configuration | Done | `worker` command; lease and poll settings from the environment (`WorkerConfig`) |
+| Lease expiry and reclaim | Done | Feature 9 |
 | pytest strategy | Done | `PytestStrategy` |
 | Python fixture repository | Done | `fixtures/intervals-python`, patches `py-*.patch` |
 
@@ -46,7 +46,7 @@ and the pytest strategy with a Python fixture.
 | Use case | Status | Demo |
 | --- | --- | --- |
 | 1: Verifying a produced change | Done, without the container or the 2 GB cap. The 5 minute timeout is enforced. | 2 (`overclaim` in detail) |
-| 2: Recovering from a worker crash | Pending (T2, T4, T6). Rewritten below: there is no broker | 4 (live crash with 3 workers and 12 runs) |
+| 2: Recovering from a worker crash | Done, rewritten below: there is no broker. `WorkerCrashTest` kills a worker process with SIGKILL mid-run | 4 (live crash with 3 workers and 12 runs) |
 
 ## Added beyond the proposal
 
