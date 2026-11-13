@@ -1,7 +1,9 @@
 package dev.cleansweep.forgeguard.orchestrator;
 
 import dev.cleansweep.forgeguard.producer.ProducerResult;
+import dev.cleansweep.forgeguard.producer.ScriptedProducer;
 import dev.cleansweep.forgeguard.sandbox.ExecResult;
+import dev.cleansweep.forgeguard.sandbox.Sandbox;
 import dev.cleansweep.forgeguard.spec.Limits;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import dev.cleansweep.forgeguard.store.Claim;
@@ -20,25 +22,33 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Ordering of the writes VerificationRun makes, with no Git, Maven or database. */
+/** Ordering and gating of the writes VerificationRun makes, with no Git, Maven or database. */
 class VerificationRunTest {
 
     private static final TaskSpec SPEC = new TaskSpec("t", "file:///unused", "v1.0", null, null,
-            List.of("mvn", "verify"), Limits.DEFAULTS, List.of());
+            List.of("mvn", "verify"), Limits.DEFAULTS, List.of("src/test/**", "pom.xml"));
 
-    private static final DiffInspector NO_DIFF =
-            ws -> new DiffInspector.Diff(ws.baseCommit(), "0".repeat(64), List.of(), "");
+    private static final String TEST_FILE = "src/test/java/demo/IntervalMergerTest.java";
+    private static final String MAIN_FILE = "src/main/java/demo/IntervalMerger.java";
+
+    private static DiffInspector touching(String... paths) {
+        return ws -> new DiffInspector.Diff(ws.baseCommit(), "0".repeat(64), List.of(paths), "");
+    }
+
+    private static UUID execute(RunStore store, Sandbox sandbox, DiffInspector diffs) {
+        return new VerificationRun(FakeWorkspace.provider(), sandbox, new MavenStrategy(), store, diffs)
+                .execute(SPEC, ws -> new ProducerResult(true, "done"));
+    }
 
     @Test
     void failedLogWriteDoesNotOverwriteARealVerdict() {
         var store = new RecordingStore(true);
-        var run = new VerificationRun(FakeWorkspace.provider(), CannedSandbox.passing(),
-                new MavenStrategy(), store, NO_DIFF);
 
-        UUID id = run.execute(SPEC, ws -> new ProducerResult(true, "done"));
+        UUID id = execute(store, CannedSandbox.passing(), touching(MAIN_FILE));
 
         assertEquals(List.of(Outcome.HARNESS_ERROR), store.verdicts);
         assertEquals(Outcome.HARNESS_ERROR, store.find(id).orElseThrow().outcome());
@@ -47,20 +57,57 @@ class VerificationRunTest {
     @Test
     void logsAreWrittenBeforeTheVerdict() {
         var store = new RecordingStore(false);
-        var run = new VerificationRun(FakeWorkspace.provider(), CannedSandbox.passing(),
-                new MavenStrategy(), store, NO_DIFF);
 
-        run.execute(SPEC, ws -> new ProducerResult(true, "done"));
+        execute(store, CannedSandbox.passing(), touching(MAIN_FILE));
 
         assertEquals(List.of("log:stdout", "log:stderr", "verdict:PASS"), store.calls);
     }
 
-    /** Records write order; optionally fails every log write. */
+    @Test
+    void protectedPathIsRejectedWithoutExecuting() {
+        var store = new RecordingStore(false);
+        var execs = new AtomicInteger();
+        Sandbox counting = (ws, cmd, limits) -> {
+            execs.incrementAndGet();
+            return CannedSandbox.passing().exec(ws, cmd, limits);
+        };
+
+        execute(store, counting, touching(MAIN_FILE, TEST_FILE));
+
+        assertEquals(0, execs.get());
+        assertEquals(List.of(Outcome.PROTECTED_PATH_MODIFIED), store.verdicts);
+        assertEquals(List.of("protected path modified: " + TEST_FILE), store.stderr);
+    }
+
+    @Test
+    void unprotectedChangeIsExecuted() {
+        var store = new RecordingStore(false);
+
+        execute(store, CannedSandbox.passing(), touching(MAIN_FILE));
+
+        assertEquals(List.of(Outcome.PASS), store.verdicts);
+    }
+
+    @Test
+    void rejectedPatchKeepsTheReasonAsEvidence() {
+        var store = new RecordingStore(false);
+
+        new VerificationRun(FakeWorkspace.provider(), CannedSandbox.passing(), new MavenStrategy(),
+                store, touching()).execute(SPEC, ws -> {
+                    throw new ScriptedProducer.PatchRejectedException("git apply exited 1: corrupt patch");
+                });
+
+        assertEquals(List.of(Outcome.PATCH_REJECTED), store.verdicts);
+        assertEquals(List.of("git apply exited 1: corrupt patch"), store.stderr);
+    }
+
+    /** Records write order and stderr content; optionally fails every log write. */
     private static final class RecordingStore implements RunStore {
         private final InMemoryRunStore delegate = new InMemoryRunStore();
         private final boolean failLogs;
         final List<String> calls = new ArrayList<>();
         final List<Outcome> verdicts = new ArrayList<>();
+        final List<String> stderr = new ArrayList<>();
 
         RecordingStore(boolean failLogs) {
             this.failLogs = failLogs;
@@ -94,6 +141,9 @@ class VerificationRunTest {
             calls.add("log:" + stream);
             if (failLogs) {
                 throw new IllegalStateException("log write failed");
+            }
+            if (stream.equals("stderr") && !content.isEmpty()) {
+                stderr.add(content);
             }
             delegate.appendLog(runId, stream, content);
         }

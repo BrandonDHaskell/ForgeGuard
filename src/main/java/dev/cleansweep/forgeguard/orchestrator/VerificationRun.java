@@ -9,6 +9,7 @@ import dev.cleansweep.forgeguard.sandbox.Termination;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import dev.cleansweep.forgeguard.store.RunStore;
 import dev.cleansweep.forgeguard.verify.Outcome;
+import dev.cleansweep.forgeguard.verify.ProtectedPathCheck;
 import dev.cleansweep.forgeguard.verify.VerificationStrategies;
 import dev.cleansweep.forgeguard.verify.VerificationStrategy;
 import dev.cleansweep.forgeguard.workspace.Workspace;
@@ -78,15 +79,20 @@ public final class VerificationRun {
             try {
                 claim = producer.run(ws);
             } catch (ScriptedProducer.PatchRejectedException e) {
-                store.recordVerdict(runId, Outcome.PATCH_REJECTED, harnessNote(e.getMessage()));
+                reject(runId, Outcome.PATCH_REJECTED, e.getMessage());
                 return runId;
             }
 
             DiffInspector.Diff diff = diffs.inspect(ws);
             store.recordProducerResult(runId, claim, diff.headCommit(), diff.sha256());
 
-            // M2: ProtectedPathCheck runs here, before the sandbox, so a change
-            // that edits the test suite is rejected without ever executing.
+            var violation = new ProtectedPathCheck(spec.protectedPaths())
+                    .firstViolation(diff.touchedPaths());
+            if (violation.isPresent()) {
+                reject(runId, Outcome.PROTECTED_PATH_MODIFIED,
+                        "protected path modified: " + violation.get());
+                return runId;
+            }
 
             var verification = strategy.verify(ws, sandbox, spec);
             // Logs before the verdict: a failed log write lands in the catch
@@ -101,6 +107,12 @@ public final class VerificationRun {
             store.recordVerdict(runId, Outcome.HARNESS_ERROR, harnessNote(e.toString()));
             return runId;
         }
+    }
+
+    /** A verdict reached without executing anything. The reason is kept as the stderr log. */
+    private void reject(UUID runId, Outcome outcome, String reason) {
+        store.appendLog(runId, "stderr", reason);
+        store.recordVerdict(runId, outcome, harnessNote(reason));
     }
 
     private static ExecResult harnessNote(String message) {
