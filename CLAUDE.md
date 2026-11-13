@@ -58,7 +58,7 @@ If `git apply` fails, the outcome is `PATCH_REJECTED`. Any other `RuntimeExcepti
 
 **A new `RunStore` method must reach every implementation:** `JdbcRunStore`, `InMemoryRunStore` and its `Fenced` view, and `VerificationRunTest.RecordingStore`. Git can't flag a missing one, because it only shows up as a compile error once branches meet. That's how T2's CI broke.
 
-**Test doubles** live in `src/test/java/.../support/`. `InMemoryRunStore` needs no PostgreSQL. `FakeWorkspace` needs no git. `CannedSandbox` returns trimmed real Maven logs, so `MavenStrategy` classifies them as it would a live build. `RunStoreContractTest` is the abstract spec that every `RunStore` must pass. `InMemoryRunStoreTest` and `JdbcRunStoreTest` subclass it. A change to `RunStore` behavior goes in the contract test so both bindings stay interchangeable. Each contract test needs an empty store, because `claim()` takes the oldest runnable run in the whole store. `InMemoryRunStoreTest` gets a new store per test. `JdbcRunStoreTest`, `MigrationTest`, `WorkerJdbcTest` and `WorkerCrashTest` run in throwaway PostgreSQL schemas (`store/ScratchSchema`), never in `public`. `ForgeGuardCliIntegrationTest` still uses `public` and cleans up its `cli-test-*` rows.
+**A new `RunStore` method must reach every implementation:** `JdbcRunStore`, `InMemoryRunStore` and its `Fenced` view, and `VerificationRunTest.RecordingStore`. Git can't flag a missing one, because it only shows up as a compile error once branches meet. That's how T2's CI broke.
 
 **Work queue (`RunStore.claim`).** `enqueue(spec, taskFile)` creates a run for a worker, and `submit` is its only caller outside tests. `create(spec)` is the synchronous path: it records no `task_file`, so no worker ever claims it. Only `VerificationRun.execute(spec, producer)` uses it, and only tests call that.
 - `claim(workerId, lease)` takes the oldest enqueued run that is `PENDING`, or `CLAIMED` with an expired lease. It is one `UPDATE ... FOR UPDATE SKIP LOCKED`, timed by the database clock.
@@ -79,14 +79,7 @@ If `git apply` fails, the outcome is `PATCH_REJECTED`. Any other `RuntimeExcepti
   - Two kinds of run are closed as `HARNESS_ERROR` without running: a task whose timeout is over the ceiling, and a task file that won't load. Closing them keeps them from being reclaimed and retried forever.
   - A `LeaseLostException` means another worker has the run. The worker logs it, abandons the run, and carries on. Any other exception ends the process, and the run is reclaimed when its lease expires.
   - There is no graceful shutdown. Ctrl-C also signals the build's child process, so the run is abandoned rather than recorded as a broken build.
-  - `support/FakeRuns` builds a `VerificationRun` around whatever fenced store a worker hands it. `WorkerTest` uses the in-memory store, and `store/WorkerJdbcTest` drains 12 runs with 2 workers and with 3 on PostgreSQL. A barrier makes every worker hold a run at once, and the test checks each run was claimed once, finished on attempt 0.
-
-**Crash recovery (T6, `store/WorkerCrashTest`).** The test starts `store/DoomedWorker` in a separate JVM.
-- `DoomedWorker` claims the run with a 2s lease, records its workspace, producer report and some partial build output, then prints `HOLDING` and blocks.
-- The test kills it with `Process.destroyForcibly()`, which is SIGKILL, the same as `kill -9`, and asserts exit 137. A survivor `Worker` then reclaims the run once the lease expires.
-- It asserts one verdict, `attempt = 1`, and none of the dead worker's evidence or logs left.
-- The child's class path comes from `surefire.test.class.path`, because failsafe gives the test JVM a manifest-only booter jar. The child connects with the same `FORGEGUARD_*` variables, to the scratch schema named on its command line.
-- Mutation-checked: if the claim query stops deleting a reclaimed run's logs, the test fails.
+  - `support/FakeRuns` builds a `VerificationRun` around whatever fenced store a worker hands it. `WorkerTest` uses the in-memory store, and `store/WorkerJdbcTest` runs the same two-worker drain on PostgreSQL in a scratch schema.
 
 **The queue from the CLI (T5).**
 - **`submit`** checks the task's strategy name, then enqueues the run with the task file's absolute path, and prints `run <id>  PENDING`. It verifies nothing.
