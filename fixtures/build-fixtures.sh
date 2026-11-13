@@ -2,6 +2,9 @@
 # Materializes the vendored fixture sources into local Git repos that JGit can
 # clone over file://. Identity and dates are pinned so commit SHAs are identical
 # on every machine, which keeps run records comparable across laptops.
+# --no-gpg-sign and --no-sign matter: a signature is part of the commit object,
+# so a global commit.gpgsign=true would change the SHA and fail
+# verify-fixtures.sh, and a global tag.gpgSign=true would stop `git tag`.
 set -euo pipefail
 
 OUT="${FORGEGUARD_FIXTURE_DIR:-/tmp/forgeguard-fixtures}"
@@ -21,8 +24,8 @@ build() {
   cp -r "$HERE/$name/." "$OUT/$name/"
   git -C "$OUT/$name" init -q -b main
   git -C "$OUT/$name" add -A
-  git -C "$OUT/$name" commit -q -m "fixture: $name baseline"
-  git -C "$OUT/$name" tag v1.0
+  git -C "$OUT/$name" commit -q --no-gpg-sign -m "fixture: $name baseline"
+  git -C "$OUT/$name" tag --no-sign v1.0
   echo "$name -> $(git -C "$OUT/$name" rev-parse HEAD)"
 }
 
