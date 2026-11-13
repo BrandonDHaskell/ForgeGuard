@@ -284,6 +284,38 @@ demo/                                   run-all.sh and its answer key
 
 Interfaces in the packages above are shared. Changing one is its own PR.
 
+## AI Use
+
+Both team members used Claude Code as their coding assistant. It worked from
+`CLAUDE.md`, and the commits it helped with carry a `Co-Authored-By: Claude`
+trailer. The main uses were:
+
+| Task | Examples |
+| --- | --- |
+| Scaffolding | The Milestone 1 skeleton: package layout, interfaces, records, the picocli CLI and the first Flyway migration |
+| Planning | A plan for each finish-plan task, written in plan mode before any code. Open decisions went to the developer. |
+| Feature work | Finish-plan items such as the pytest strategy, the protected-path check and the worker loop |
+| Test generation | The `RunStore` contract tests, the integration tests in throwaway PostgreSQL schemas, and the end-to-end fixture tests |
+| Debugging | A CI break caused by a `RunStore` method that each branch compiled without and that failed only once the branches merged. Also fixture SHAs that changed under global commit signing, and library log messages silently dropped by an old SLF4J version. |
+| Documentation | `CLAUDE.md`, `PROPOSAL_TRACE.md`, commit messages and pull request descriptions |
+
+**Example: the worker side of the work queue.** Features 8 and 9 and use case 2
+were finished with Claude Code in tasks T4 to T6, each on its own branch:
+
+- **T4:** the `Worker` loop and its environment settings, including the rule
+  that a worker's lease must outlast the longest task timeout.
+- **T5:** `submit` changed to only queue a run. The task also added `watch` and
+  `stats`.
+- **T6:** `WorkerCrashTest`, which kills a worker process with SIGKILL partway
+  through a build. It checks that a second worker reclaims the run and leaves a
+  single verdict with `attempt = 1`.
+
+To show the crash test can fail, Claude Code also broke the reclaim on purpose
+and confirmed the test caught it. Decisions it was unsure of went to the
+developer, such as whether to wait for an open pull request or how to test
+without touching the real database schema. The other team member reviewed and
+merged each pull request.
+
 ## License
 
 CC0 1.0 Universal (public domain dedication). See `LICENSE`.
