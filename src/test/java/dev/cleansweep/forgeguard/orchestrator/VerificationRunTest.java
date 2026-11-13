@@ -208,19 +208,26 @@ class VerificationRunTest {
             return delegate.recent(limit);
         }
 
-         @Override
-          public UUID enqueue(TaskSpec spec, Path taskFile) {
-              return delegate.enqueue(spec, taskFile);
-          }
+        // The work-queue methods (T2, T3). VerificationRun never calls them.
 
-          @Override
-          public Optional<Claim> claim(String workerId, Duration lease) {
-              return delegate.claim(workerId, lease);
-          }
+        @Override
+        public UUID enqueue(TaskSpec spec, Path taskFile) {
+            return delegate.enqueue(spec, taskFile);
+        }
 
-          @Override
-          public String logs(UUID runId, String stream) {
-              return delegate.logs(runId, stream);
-          }
+        @Override
+        public Optional<Claim> claim(String workerId, Duration lease) {
+            return delegate.claim(workerId, lease);
+        }
+
+        @Override
+        public RunStore fencedTo(Claim claim) {
+            return delegate.fencedTo(claim);
+        }
+
+        @Override
+        public String logs(UUID runId, String stream) {
+            return delegate.logs(runId, stream);
+        }
     }
 }

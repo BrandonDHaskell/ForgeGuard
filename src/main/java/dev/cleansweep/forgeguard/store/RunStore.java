@@ -50,6 +50,23 @@ public interface RunStore {
      */
     Optional<Claim> claim(String workerId, Duration lease);
 
+    /**
+     * This store as seen by the worker holding claim. A worker writes through
+     * this view, never through the plain store.
+     *
+     * <p>Writes to claim's run (recordWorkspace, recordProducerResult,
+     * recordVerdict, appendLog) go through only while the claim is current: the
+     * run is still held by the same worker, at the same attempt. Once another
+     * claim takes the run over, each of those writes throws LeaseLostException
+     * and changes nothing, so a worker that lost its lease cannot touch the new
+     * attempt's evidence or verdict. An expired lease that nobody has reclaimed
+     * is still held: the run is taken away by a reclaim, not by the clock.
+     *
+     * <p>Writes to any other run throw IllegalArgumentException. Reads, and
+     * create, enqueue and claim, behave as on this store.
+     */
+    RunStore fencedTo(Claim claim);
+
     void recordWorkspace(UUID runId, String baseCommit);
 
     void recordProducerResult(UUID runId, ProducerResult result,

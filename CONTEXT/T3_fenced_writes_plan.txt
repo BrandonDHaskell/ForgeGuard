@@ -1,0 +1,140 @@
+# T3 — Fence worker writes to the claim they hold
+
+## Context
+
+Finish Plan T3: *"Every write from a worker is limited to runs it still holds (`WHERE run_id = ? AND claimed_by = ?`)."*
+**Done when:** a worker that lost its lease can't overwrite the new result.
+
+**The hazard T2 left open.** Worker A claims a run and stalls (a long GC pause, a hung build, a laptop lid closed). Its lease expires, worker B reclaims the run, which clears it and bumps `attempt` to 1, and B starts over. Then A wakes up. Today every `RunStore` write is keyed only by `run_id`, so A's `recordVerdict` or `appendLog` lands on B's attempt. The record ends up with one worker's verdict and another's logs, which is exactly what BUILD_PLAN.md warns about.
+
+**Branch state.** You're on `tg/worker_fix`, on top of T2 (`9645751`). `main` hasn't moved and all of Brandon's PRs (#15–#23) are still open.
+
+## Design
+
+**The fence is `(claimed_by, attempt)`, not `claimed_by` alone.** The Finish Plan names only `claimed_by`. Adding `attempt`, which T2 already returns in `Claim`, also covers a worker that reclaims its *own* expired run, for example after a restart under the same id. Its stale attempt-0 writes must fail just like anyone else's. It costs one more `AND` per write.
+
+**A lease that expired but hasn't been reclaimed is still held.** The fence is checked against the row, not the clock. A slow worker whose lease ran out while no other worker took the run still records its verdict, which saves a re-run. The run is taken away only when another claim happens, and that claim bumps `attempt`, so the old holder's writes start failing.
+
+**API: one new interface method, and `VerificationRun` is unchanged.**
+
+```java
+/** This store as seen by the worker holding claim. */
+RunStore fencedTo(Claim claim);
+```
+
+The returned view behaves like the store except for writes:
+- `recordWorkspace`, `recordProducerResult`, `recordVerdict` and `appendLog` to `claim.runId()` succeed only while that claim is current: same `claimed_by`, same `attempt`.
+- Once the run is reclaimed, every one of those writes throws the new **`LeaseLostException`** and changes nothing.
+- A write to any other run throws `IllegalArgumentException`, so a fenced view can't touch runs it never claimed.
+- Reads, `create`, `enqueue` and `claim` behave as on the plain store.
+
+The unfenced store is unchanged, so the synchronous `submit` path (`create()`) works as before.
+
+Why a view rather than more write methods: `VerificationRun` (Brandon's file) only calls `store.recordX(runId, ...)`. With a view, T4's worker can build `new VerificationRun(..., store.fencedTo(claim), ...)` without `VerificationRun` changing, and without touching B2's or B5's open edits to that file. Adding fenced overloads instead would add four interface methods and force a `VerificationRun` rewrite.
+
+**`Claim` gains `workerId`**, so the token holds everything the fence needs: `Claim(UUID runId, String workerId, Path taskFile, int attempt, Instant leaseExpiresAt)`.
+
+**`LeaseLostException`** is a new public `RuntimeException` in `store/`, shared by both implementations. Its message names the run, worker and attempt. It deliberately does **not** extend `IllegalArgumentException`, because the CLI prints those as operator input errors, and a lost lease is not bad input.
+
+## Changes
+
+### `store/JdbcRunStore.java`
+
+- **Fence state.** A private `final Claim fence` field, which is null for the plain store. A private constructor `JdbcRunStore(DataSource, Claim)` builds a fenced store. `fencedTo(claim)` returns `new JdbcRunStore(ds, claim)` and shares the same pool.
+- **The shared `update(...)` helper:**
+  - `Binder.bind` returns the number of parameters it bound.
+  - When fenced, `update` appends `AND claimed_by = ? AND attempt = ?` and binds those two values after the binder's.
+  - When fenced and 0 rows match, it throws `LeaseLostException`. When not fenced, it keeps today's `StoreException("no such run: …")`.
+  - A fenced write to a different run id throws `IllegalArgumentException` before any SQL runs.
+- **Why the UPDATE writes need nothing more.** In PostgreSQL an UPDATE takes the row lock and re-checks its WHERE clause against the latest row version (READ COMMITTED). The zombie's write and the reclaim are therefore serialized:
+  - If the reclaim commits first, the zombie's fenced UPDATE matches 0 rows.
+  - If the zombie's write holds the row first, the claim's `SKIP LOCKED` skips the row until the write commits.
+- **`appendLog` needs a lock.** An INSERT into `run_logs` doesn't lock the `runs` row. A zombie's log could slip in between the reclaim's UPDATE and its `DELETE FROM run_logs` and survive into the new attempt. So `appendLog` becomes one transaction, using the same `setAutoCommit(false)` and rollback pattern as `claim`:
+  1. `SELECT 1 FROM runs WHERE run_id = ? [AND claimed_by = ? AND attempt = ?] FOR SHARE`
+  2. On no row: `LeaseLostException` if fenced, otherwise `StoreException("no such run")`.
+  3. Run the existing `INSERT ... COALESCE(max(seq)+1, 0)` and commit.
+- **How the `FOR SHARE` lock plays with claims.** It conflicts with the claim's `FOR UPDATE SKIP LOCKED`:
+  - A claim skips the run while a log write is in progress.
+  - A log write that waits on an in-flight reclaim re-checks the fence after the reclaim commits, and fails.
+  - The plain store takes the same lock, which is harmless, so there is one code path.
+
+### `src/test/.../support/InMemoryRunStore.java`
+
+- **Shared write code.** The four writes move into private methods that take a nullable `Claim fence`. A `held(runId, fence)` helper throws `LeaseLostException` when `fence` doesn't match the row's `claimedBy` and `attempt`. The public `synchronized` writes call these with `null`.
+- **The fenced view.** `fencedTo(claim)` returns a private inner class `Fenced implements RunStore`:
+  - Writes `synchronized (InMemoryRunStore.this)`, so the view and the store share one lock and one map. The concurrency contract test needs that.
+  - Rejects other run ids.
+  - Passes everything else straight to the outer store.
+- `claim` fills in `Claim.workerId`.
+
+### `src/test/.../store/RunStoreContractTest.java` (5 new tests, run against both bindings)
+
+- `holderWritesThroughItsFence`: a held claim's view records workspace, producer result, logs and verdict, and `find()` shows all of them.
+- **`lostLeaseCannotOverwriteTheNewResult`** (the "done when" case):
+  1. A claims with a zero lease. B reclaims (attempt 1).
+  2. A's four writes through its view each throw `LeaseLostException`, and the row stays cleared.
+  3. B writes and records `PASS`.
+  4. A tries `recordVerdict(TEST_FAIL)` and `appendLog` again. Both are rejected.
+  5. The final record is B's: `PASS`, B's base commit, only B's logs.
+- `expiredLeaseIsStillHeldUntilReclaimed`: A's lease (zero) expires and nobody reclaims, so A's verdict is recorded.
+- `staleAttemptOfTheSameWorkerIsFenced`: `w1` claims, then `w1` reclaims its own run. The attempt-0 view is rejected and the attempt-1 view writes.
+- `fencedViewRejectsOtherRuns`: a view for run 1 writing to run 2 throws `IllegalArgumentException`, and run 2 is unchanged.
+
+### `src/test/.../store/JdbcRunStoreTest.java` (the race, which only real PostgreSQL has)
+
+`zombieWritesWaitingOnAReclaimFailWhenItCommits`, run once for `recordVerdict` and once for `appendLog`:
+1. Open a raw transaction that performs a reclaim (`claimed_by = 'w2'`, `attempt = attempt + 1`) and don't commit it yet.
+2. On another thread, call A's fenced write. It blocks on the row lock.
+3. Poll `pg_stat_activity` until a backend in this database is waiting on a lock. No sleeps that guess at timing.
+4. Commit the reclaim. A's write must fail with `LeaseLostException`.
+5. Check that the row has no verdict and no logs from A.
+
+This shows the guarantee holds under a real concurrent interleaving, not just in sequence.
+
+### `CLAUDE.md`
+
+In the work-queue paragraph, replace "Worker writes are not yet fenced (T3)" with one sentence on `fencedTo` and `LeaseLostException`.
+
+## Merge coordination (for the PR description)
+
+- **B2, PR #17:** `RecordingStore implements RunStore` now needs four one-line delegations: `enqueue`, `claim`, `logs`, `fencedTo`. Whoever merges second adds them.
+- **B7, PR #23:** no new overlap. T3 touches the write lambdas and `appendLog`, not `create`'s INSERT.
+- **Stacking:** `tg/worker_fix` sits on T2, which sits on T1. The PRs open in that order.
+
+## Handoffs to T4 (worker)
+
+- Per claim, build the run with `store.fencedTo(claim)` and catch `LeaseLostException` in the loop. Log it, abandon the run and claim the next one. It's an expected outcome, not a crash.
+- `VerificationRun.execute` still calls `create()`. T4 adds an execute-an-existing-run path. Until then a fenced view can't be used with it: `create()` returns a new run id, and the view rejects writes to it.
+- When the fenced store throws inside `VerificationRun`, its catch-all tries to record `HARNESS_ERROR` through the same store. That also throws `LeaseLostException`, so the exception still escapes and the workspace is closed first. It would be tidier for `VerificationRun` to rethrow `LeaseLostException` directly; that's optional and belongs in Brandon's file.
+
+## Verification
+
+1. `mvn -B test`: all contract tests, fencing included, against `InMemoryRunStore` with no database.
+2. With PostgreSQL up, `mvn -B verify -Dit.test='JdbcRunStoreTest,MigrationTest'` runs the JDBC binding, the race test and the migrations, all in scratch schemas.
+3. Afterwards, no `fg_%` schemas are left, and `public` is untouched.
+
+As before, I won't run the full `mvn -B verify`, because it would migrate your dev database to V2. That check is still yours.
+
+## Not part of T3
+
+- **Commit subjects:** T2's commit (`9645751`) has the same mangled subject as T1's: the shell swallowed the backticked words. When you commit T3, use single quotes or `git commit -F <file>` to keep the backticks.
+- **Push and commit:** nothing will be committed or pushed by me.
+
+---
+
+## As implemented (differences from the plan above)
+
+- The JDBC race test is split into two tests,
+  `zombieVerdictWaitingOnAReclaimFailsWhenItCommits` and
+  `zombieLogWaitingOnAReclaimFailsWhenItCommits`. They share one helper,
+  `assertLosesToAnInFlightReclaim`.
+- A check I added beyond the plan: I temporarily removed the `FOR SHARE` from
+  `appendLog` and ran the log race test. It failed, because the zombie's write
+  never waited and would have slipped into the new attempt. I then restored the
+  file and the test passed again. This confirms the lock is what makes that
+  test pass.
+- Results:
+    - `mvn -B test`: 66 unit tests, including 23 contract tests against InMemoryRunStore.
+    - `mvn -B verify -Dit.test='JdbcRunStoreTest,MigrationTest'`: 30 + 2 tests.
+      Afterwards no `fg_%` schemas were left and `public` was still at version 1.
+- Nothing has been committed or pushed. The work is uncommitted on branch `tg/worker_fix`.

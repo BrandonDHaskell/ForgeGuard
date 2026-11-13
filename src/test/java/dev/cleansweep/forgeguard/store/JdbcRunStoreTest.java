@@ -1,13 +1,17 @@
 package dev.cleansweep.forgeguard.store;
 
 import dev.cleansweep.forgeguard.producer.ProducerResult;
+import dev.cleansweep.forgeguard.sandbox.ExecResult;
+import dev.cleansweep.forgeguard.sandbox.Termination;
 import dev.cleansweep.forgeguard.spec.Limits;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
+import dev.cleansweep.forgeguard.verify.Outcome;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import javax.sql.DataSource;
 import java.nio.file.Path;
@@ -15,6 +19,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -23,12 +28,19 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * The contract against a live PostgreSQL, plus the checks only SQL can see.
@@ -143,6 +155,92 @@ public final class JdbcRunStoreTest extends RunStoreContractTest {
         assertEquals(List.of(300), ints(
                 "SELECT extract(epoch FROM lease_expires_at - claimed_at)::int FROM runs WHERE run_id = ?", id));
         assertEquals("w2", columns(id, Set.of("claimed_by")).get("claimed_by"));
+    }
+
+    // --- the race the fence exists for ---------------------------------------
+    //
+    // A reclaim has updated the row but not yet committed when the old holder's
+    // write arrives. The contract test can only run these one after the other;
+    // here they overlap, as they would between two real workers.
+
+    @Test
+    void zombieVerdictWaitingOnAReclaimFailsWhenItCommits() throws Exception {
+        UUID id = store.enqueue(spec(), Path.of("/repo/tasks/t.yaml"));
+        RunStore zombie = store.fencedTo(store.claim("w1", Duration.ZERO).orElseThrow());
+        ExecResult failed = new ExecResult(1, "", "", Termination.EXITED, 5L, List.of("mvn"));
+
+        assertLosesToAnInFlightReclaim(id, () -> zombie.recordVerdict(id, Outcome.TEST_FAIL, failed));
+
+        assertNull(columns(id, Set.of("outcome")).get("outcome"));
+    }
+
+    /** appendLog is an INSERT, so this one depends on its FOR SHARE lock on the runs row. */
+    @Test
+    void zombieLogWaitingOnAReclaimFailsWhenItCommits() throws Exception {
+        UUID id = store.enqueue(spec(), Path.of("/repo/tasks/t.yaml"));
+        RunStore zombie = store.fencedTo(store.claim("w1", Duration.ZERO).orElseThrow());
+
+        assertLosesToAnInFlightReclaim(id, () -> zombie.appendLog(id, "stdout", "zombie log\n"));
+
+        assertEquals(List.of(0), ints("SELECT count(*) FROM run_logs WHERE run_id = ?", id));
+    }
+
+    /**
+     * Holds a reclaim's row update open, starts zombieWrite, waits until that write
+     * is blocked on the row lock, then commits the reclaim. The write must then
+     * fail with LeaseLostException.
+     */
+    private static void assertLosesToAnInFlightReclaim(UUID id, Executable zombieWrite) throws Exception {
+        // The executor is declared first so it closes last: if an assertion fails
+        // before the commit, the connection closes and rolls back first, which
+        // releases the lock the zombie's write is waiting on.
+        try (ExecutorService pool = Executors.newSingleThreadExecutor();
+             Connection reclaim = db.getConnection()) {
+            reclaim.setAutoCommit(false);
+            try (PreparedStatement ps = reclaim.prepareStatement("""
+                    UPDATE runs SET claimed_by = 'w2', attempt = attempt + 1, claimed_at = now()
+                    WHERE run_id = ?
+                    """)) {
+                ps.setObject(1, id);
+                assertEquals(1, ps.executeUpdate());
+            }
+
+            Future<Throwable> write = pool.submit(() -> {
+                try {
+                    zombieWrite.execute();
+                    return null;
+                } catch (Throwable t) {
+                    return t;
+                }
+            });
+            awaitASessionWaitingOnALock();
+            assertFalse(write.isDone(), "the zombie's write should be waiting for the reclaim's row lock");
+
+            reclaim.commit();
+            Throwable thrown = write.get(10, TimeUnit.SECONDS);
+            assertInstanceOf(LeaseLostException.class, thrown, "the zombie's write was not rejected: " + thrown);
+        }
+        assertEquals("w2", columns(id, Set.of("claimed_by")).get("claimed_by"));
+    }
+
+    /** Polls pg_stat_activity rather than guessing how long the other thread takes to block. */
+    private static void awaitASessionWaitingOnALock() throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        try (Connection c = db.getConnection(); Statement s = c.createStatement()) {
+            while (System.nanoTime() < deadline) {
+                try (ResultSet rs = s.executeQuery("""
+                        SELECT count(*) FROM pg_stat_activity
+                        WHERE datname = current_database() AND wait_event_type = 'Lock'
+                        """)) {
+                    rs.next();
+                    if (rs.getInt(1) > 0) {
+                        return;
+                    }
+                }
+                Thread.sleep(20);
+            }
+        }
+        fail("the zombie's write never waited on the row lock");
     }
 
     /** The named columns of one run. The names come from the constants above, never from input. */
