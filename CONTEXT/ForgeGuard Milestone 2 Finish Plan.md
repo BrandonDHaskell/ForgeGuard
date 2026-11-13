@@ -4,7 +4,9 @@
 
 ## Summary
 
-Milestone 2 is due Nov 12, 2026, and the repo has no commits since Oct 7, so every Milestone 2 item is still open along with the M1 items carried over.
+**Status, Nov 12: complete.** Every task below is merged to `main` (PRs #15 to #38), and CI runs the answer-key demo on each pull request. B10, letting `VerificationRun` execute a run a worker has already claimed, was added during the work. The plan is kept below as written, with the status column updated.
+
+When this plan was written, Milestone 2 was due Nov 12, 2026, and the repo had no commits since Oct 7, so every Milestone 2 item was still open along with the M1 items carried over.
 
 The plan: build the four Milestone 2 features from the proposal (work queue, multiple workers, lease reclaim, pytest), fix the known correctness bugs, demo against an answer key, and formally cut Docker. That is about 8 hours each for Brandon and Timothy.
 
@@ -26,15 +28,16 @@ Nine tasks, about 8 hours. Do B1 to B4 first: they make the demo verdicts correc
 
 | # | Task | Est. | Done when | Status |
 | --- | --- | --- | --- | --- |
-| B1 | Diff fix: run `git add -A`, then `git diff --cached` | 30m | A new file appears in the touched list and the hash | Not started |
-| B2 | Write logs before the verdict | 15m | A failed log write can't overwrite a real verdict | Not started |
-| B3 | Wire in `ProtectedPathCheck` between the diff and the sandbox | 45m | `tamper` gives PROTECTED\_PATH\_MODIFIED | Not started |
-| B4 | Move `hang.patch`'s infinite loop into `IntervalMerger.java` | 15m | `hang` still gives TIMEOUT (today it edits a test file, so B3 would reject it) | Not started |
-| B5 | Add `strategy: maven` or `pytest` to the task file, plus a name-to-strategy lookup | 1h | Adding pytest needs no change to the run logic | Not started |
-| B6 | `PytestStrategy`, a Python fixture, and the same 4 patches | 3h | All 4 scenarios give the same verdicts as Maven | Not started |
-| B7 | Record only the limits that were actually enforced | 30m | `show` no longer claims network is off or a 2 GB cap | Not started |
-| B8 | `demo/run-all.sh` with an answer key, also run in CI (CI needs pytest installed) | 1h | Prints expected, actual and match for all 8 tasks, and fails on any mismatch | Not started |
-| B9 | `PROPOSAL_TRACE.md`, README, and remove "pick the top two or three" from `BUILD_PLAN.md` | 1h | Each proposal feature maps to a class, a test and a demo step | Not started |
+| B1 | Diff fix: run `git add -A`, then `git diff --cached` | 30m | A new file appears in the touched list and the hash | Done |
+| B2 | Write logs before the verdict | 15m | A failed log write can't overwrite a real verdict | Done |
+| B3 | Wire in `ProtectedPathCheck` between the diff and the sandbox | 45m | `tamper` gives PROTECTED\_PATH\_MODIFIED | Done |
+| B4 | Move `hang.patch`'s infinite loop into `IntervalMerger.java` | 15m | `hang` still gives TIMEOUT (today it edits a test file, so B3 would reject it) | Done |
+| B5 | Add `strategy: maven` or `pytest` to the task file, plus a name-to-strategy lookup | 1h | Adding pytest needs no change to the run logic | Done |
+| B6 | `PytestStrategy`, a Python fixture, and the same 4 patches | 3h | All 4 scenarios give the same verdicts as Maven | Done |
+| B7 | Record only the limits that were actually enforced | 30m | `show` no longer claims network is off or a 2 GB cap | Done |
+| B8 | `demo/run-all.sh` with an answer key, also run in CI (CI needs pytest installed) | 1h | Prints expected, actual and match for all 8 tasks, and fails on any mismatch | Done |
+| B9 | `PROPOSAL_TRACE.md`, README, and remove "pick the top two or three" from `BUILD_PLAN.md` | 1h | Each proposal feature maps to a class, a test and a demo step | Done |
+| B10 | `VerificationRun.execute(runId, ...)` for a run a worker has already claimed | (added) | A worker verifies through the store fenced to its claim | Done |
 
 - **Pytest exit codes (B6):** 0 is PASS, 1 is TEST\_FAIL, anything else is BUILD\_FAIL. Exit 5 ("no tests collected") must never count as PASS.
 - **Answer key (B8):** keep it out of the task YAML. The loader rejects unknown fields, and the harness shouldn't grade itself against stored answers.
@@ -45,12 +48,12 @@ Six tasks, about 8 hours. T1 and T2 come first: the worker, CLI and tests all bu
 
 | # | Task | Est. | Done when | Status |
 | --- | --- | --- | --- | --- |
-| T1 | V2 migration adding `attempt`, `task_file` and `sandbox` columns | 30m | Applies to both a fresh database and an M1 database | Not started |
-| T2 | Claim query (`SKIP LOCKED`) picks up pending runs or claimed runs whose lease expired. Reclaiming clears the verdict, deletes the logs and increments `attempt` | 2h | A reclaimed run keeps nothing from the first attempt | Not started |
-| T3 | Every write from a worker is limited to runs it still holds (`WHERE run_id = ? AND claimed_by = ?`) | 45m | A worker that lost its lease can't overwrite the new result | Not started |
-| T4 | `worker` loop with lease and poll settings from environment variables; refuses to start unless the lease is longer than the longest timeout plus a margin | 1.5h | Two workers empty the queue with no duplicate claims | Not started |
-| T5 | `submit` only queues the run; add `watch` and `stats` (verdict counts and disagreement rate) | 1.5h | Proposal feature 7 is complete | Not started |
-| T6 | Concurrency and crash tests | 1.5h | 3 workers and 12 runs, each claimed once; `kill -9` on a worker leaves one verdict with `attempt = 1` | Not started |
+| T1 | V2 migration adding `attempt`, `task_file` and `sandbox` columns | 30m | Applies to both a fresh database and an M1 database | Done |
+| T2 | Claim query (`SKIP LOCKED`) picks up pending runs or claimed runs whose lease expired. Reclaiming clears the verdict, deletes the logs and increments `attempt` | 2h | A reclaimed run keeps nothing from the first attempt | Done |
+| T3 | Every write from a worker is limited to runs it still holds (`WHERE run_id = ? AND claimed_by = ?`) | 45m | A worker that lost its lease can't overwrite the new result | Done |
+| T4 | `worker` loop with lease and poll settings from environment variables; refuses to start unless the lease is longer than the longest timeout plus a margin | 1.5h | Two workers empty the queue with no duplicate claims | Done |
+| T5 | `submit` only queues the run; add `watch` and `stats` (verdict counts and disagreement rate) | 1.5h | Proposal feature 7 is complete | Done |
+| T6 | Concurrency and crash tests | 1.5h | 3 workers and 12 runs, each claimed once; `kill -9` on a worker leaves one verdict with `attempt = 1` | Done |
 
 Keep PRs small so each of you can review the other's quickly.
 
@@ -61,7 +64,7 @@ The demo shows every verdict next to its expected answer, so the instructor can 
 1. `run-all.sh`: 8 rows, all matching the answer key.
 2. `overclaim` in detail: the producer's claim next to the verdict, the failing test, and the database row.
 3. Pytest: the same 4 scenarios, where the only difference in the task file is `strategy:`.
-4. Use case 2 live: 3 workers and 12 runs, then kill one worker. Set timeouts to 30s and the lease to 60s so reclaim happens in about a minute.
+4. Use case 2 live: 3 workers and 12 runs, then kill one worker. Use the 60s task files in `crash-demo/` with `FORGEGUARD_MAX_TIMEOUT_SECONDS=60` and `FORGEGUARD_LEASE_SECONDS=76`. (A 60s lease, as first planned, only allows a 44s timeout ceiling, which the committed tasks exceed.)
 5. `stats` showing the disagreement rate.
 6. Record a backup of the full run tonight.
 

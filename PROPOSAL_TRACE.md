@@ -68,8 +68,12 @@ itself.
    test, and the database row.
 3. pytest: the same 4 scenarios. The only difference in the task file is
    `strategy:`.
-4. Use case 2 live: 3 workers, 12 runs, one worker killed. Timeouts are 30s and
-   the lease is 60s, so reclaim happens in about a minute.
+4. Use case 2 live: 3 workers, 12 runs, one worker killed. The runs come from
+   `crash-demo/`, the four Maven tasks with a 60s timeout, each submitted three
+   times. The workers run with `FORGEGUARD_MAX_TIMEOUT_SECONDS=60` and
+   `FORGEGUARD_LEASE_SECONDS=76`, the shortest lease a worker accepts for that
+   ceiling, so reclaim happens in just over a minute. The commands are in the
+   README under "Worker crash and reclaim".
 5. `stats`: verdict counts and the disagreement rate.
 
 ## Changes from the proposal

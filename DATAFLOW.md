@@ -9,18 +9,26 @@ and materialized by `fixtures/build-fixtures.sh`:
 
 | Input | Path | Produced by |
 | --- | --- | --- |
-| Fixture source | `fixtures/intervals-java/` | Written by hand, committed |
+| Fixture source | `fixtures/intervals-java/`, `fixtures/intervals-python/` | Written by hand, committed |
 | Candidate change | `fixtures/patches/<name>.patch` | `git diff` against the fixture |
 | Producer's claim | `fixtures/patches/<name>.report.json` | Written by hand, committed |
 
-`build-fixtures.sh` copies the fixture source into `/tmp/forgeguard-fixtures/intervals-java`,
-runs `git init`, commits with pinned identity and dates, and tags `v1.0`. Because
-author, committer, and both dates are fixed, the commit SHA is identical on every
-machine:
+`build-fixtures.sh` copies each fixture source into `/tmp/forgeguard-fixtures/<name>`,
+runs `git init`, commits with pinned identity and dates and no signature, and
+tags `v1.0`. Because author, committer, and both dates are fixed, each commit SHA
+is identical on every machine. The expected values are in
+`fixtures/BASE_SHA.<name>.txt`:
 
 ```
-7f8561742a0edcf981fcb73942688403a57e31b6
+intervals-java    7f8561742a0edcf981fcb73942688403a57e31b6
+intervals-python  b3a99d1619958e2757594748e47f9af2393b3027
 ```
+
+The Python fixture has the same seeded defect and the same four patches, named
+`py-*.patch`. This document follows the Java task; a pytest task differs only in
+its `strategy`, its verify command (`python -m pytest -q`), and its protected
+paths. `PytestStrategy` maps exit 0 to `PASS`, 1 to `TEST_FAIL`, and anything
+else, including 5 (no tests collected), to `BUILD_FAIL`.
 
 That SHA makes two run records **source**-comparable. It does not make them
 execution-comparable; see section 8.
