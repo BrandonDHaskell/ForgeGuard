@@ -74,8 +74,9 @@ lists every change from the proposal.
 
 ## Split
 
-Full task lists with acceptance criteria are in `WORK_BRANDON.md` and
-`WORK_TIMOTHY.md`. Summary:
+Timothy's task list with acceptance criteria is in `WORK_TIMOTHY.md`. Brandon's
+was tracked outside the repository. The Milestone 2 task lists for both are in
+`CONTEXT/ForgeGuard Milestone 2 Finish Plan.md`. Summary:
 
 | Owner | Files | Branch prefix |
 | --- | --- | --- |
