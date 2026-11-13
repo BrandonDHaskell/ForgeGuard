@@ -98,13 +98,60 @@ class VerificationRunTest {
         assertEquals(List.of("git apply exited 1: corrupt patch"), store.stderr);
     }
 
-    /** Records write order and stderr content; optionally fails every log write. */
+    @Test
+    void existingRunIsVerifiedInPlaceWithoutCreatingAnother() {
+        var store = new InMemoryRunStore();
+        UUID id = store.create(SPEC);
+
+        new VerificationRun(FakeWorkspace.provider(), CannedSandbox.passing(), new MavenStrategy(),
+                store, touching(MAIN_FILE)).execute(id, SPEC, ws -> new ProducerResult(true, "done"));
+
+        assertEquals(1, store.recent(10).size());
+        assertEquals(Outcome.PASS, store.find(id).orElseThrow().outcome());
+    }
+
+    @Test
+    void unknownStrategyOnAnExistingRunIsRecordedNotThrown() {
+        var gradle = new TaskSpec("t", "file:///unused", "v1.0", null, null,
+                List.of("gradle", "test"), Limits.DEFAULTS, List.of(), "gradle");
+        var store = new RecordingStore(false);
+        UUID id = store.create(gradle);
+        var execs = new AtomicInteger();
+        Sandbox counting = (ws, cmd, limits) -> {
+            execs.incrementAndGet();
+            return CannedSandbox.passing().exec(ws, cmd, limits);
+        };
+
+        new VerificationRun(FakeWorkspace.provider(), counting, new MavenStrategy(), store,
+                touching(MAIN_FILE)).execute(id, gradle, ws -> new ProducerResult(true, "done"));
+
+        assertEquals(0, execs.get());
+        assertEquals(List.of(Outcome.HARNESS_ERROR), store.verdicts);
+        assertTrue(store.stderr.getFirst().startsWith("unknown strategy: gradle"), store.stderr.toString());
+    }
+
+    @Test
+    void refusedHarnessErrorWritePropagatesWithTheCauseAttached() {
+        var store = new RecordingStore(true);
+        store.failVerdicts = true;
+        UUID id = store.create(SPEC);
+
+        var refused = assertThrows(IllegalStateException.class, () ->
+                new VerificationRun(FakeWorkspace.provider(), CannedSandbox.passing(), new MavenStrategy(),
+                        store, touching(MAIN_FILE)).execute(id, SPEC, ws -> new ProducerResult(true, "done")));
+
+        assertEquals("verdict write failed", refused.getMessage());
+        assertEquals("log write failed", refused.getSuppressed()[0].getMessage());
+    }
+
+    /** Records write order and stderr content; optionally fails every log or verdict write. */
     private static final class RecordingStore implements RunStore {
         private final InMemoryRunStore delegate = new InMemoryRunStore();
         private final boolean failLogs;
         final List<String> calls = new ArrayList<>();
         final List<Outcome> verdicts = new ArrayList<>();
         final List<String> stderr = new ArrayList<>();
+        boolean failVerdicts;
 
         RecordingStore(boolean failLogs) {
             this.failLogs = failLogs;
@@ -130,6 +177,9 @@ class VerificationRunTest {
         public void recordVerdict(UUID runId, Outcome outcome, ExecResult exec) {
             calls.add("verdict:" + outcome);
             verdicts.add(outcome);
+            if (failVerdicts) {
+                throw new IllegalStateException("verdict write failed");
+            }
             delegate.recordVerdict(runId, outcome, exec);
         }
 
