@@ -17,9 +17,13 @@ docker compose up -d postgres             # PostgreSQL 17 on :5432, db/user/pass
 mvn -B -f /tmp/forgeguard-fixtures/intervals-java/pom.xml verify -Dmaven.test.failure.ignore=true
 
 mvn -B package                            # shaded jar: target/forgeguard-0.1.0-SNAPSHOT.jar
-java -jar target/forgeguard-0.1.0-SNAPSHOT.jar submit tasks/overclaim.yaml
+java -jar target/forgeguard-0.1.0-SNAPSHOT.jar submit tasks/overclaim.yaml   # only queues; prints the run id
+java -jar target/forgeguard-0.1.0-SNAPSHOT.jar worker --drain                 # verifies queued runs, then exits
+java -jar target/forgeguard-0.1.0-SNAPSHOT.jar watch <run-id>                 # waits for the verdict (--timeout N)
 java -jar target/forgeguard-0.1.0-SNAPSHOT.jar show <run-id>
 java -jar target/forgeguard-0.1.0-SNAPSHOT.jar list
+java -jar target/forgeguard-0.1.0-SNAPSHOT.jar stats
+./demo/run-all.sh                         # every task, graded against demo/expected.tsv (CI runs this too)
 ```
 
 Tests:
@@ -50,11 +54,13 @@ The package is `dev.cleansweep.forgeguard`. Start with `orchestrator/Verificatio
 
 If `git apply` fails, the outcome is `PATCH_REJECTED`. Any other `RuntimeException` inside the run is caught and recorded as `HARNESS_ERROR`. If the store refuses that write too, as a fenced store does after a lost lease, the refusal propagates with the original failure attached as suppressed.
 
-**Single wiring point.** There is no DI framework. Every outside dependency (git, process execution, build system, database) sits behind an interface: `WorkspaceProvider`, `Sandbox`, `VerificationStrategy`, `RunStore`, `Producer`, and `DiffInspector`. `cli/ForgeGuardCli` is the only place that constructs the real implementations. Each picocli subcommand builds its collaborators in `run()` and delegates to a static method (`Submit.submit`, `Show.show`, `List.list`) that takes the collaborators and a `PrintWriter`. Unit tests call those static methods with fakes.
+**Single wiring point.** There is no DI framework. Every outside dependency (git, process execution, build system, database) sits behind an interface: `WorkspaceProvider`, `Sandbox`, `VerificationStrategy`, `RunStore`, `Producer`, and `DiffInspector`. `cli/ForgeGuardCli` is the only place that constructs the real implementations. Each picocli subcommand builds its collaborators in `run()` and delegates to a static method (`Submit.submit`, `Watch.watch`, `Show.show`, `List.list`, `Stats.stats`) that takes the collaborators and a `PrintWriter`. Unit tests call those static methods with fakes. `Watch.watch` also takes its sleeper, so tests never wait.
+
+**A new `RunStore` method must reach every implementation:** `JdbcRunStore`, `InMemoryRunStore` and its `Fenced` view, and `VerificationRunTest.RecordingStore`. Git can't flag a missing one, because it only shows up as a compile error once branches meet. That's how T2's CI broke.
 
 **Test doubles** live in `src/test/java/.../support/`. `InMemoryRunStore` needs no PostgreSQL. `FakeWorkspace` needs no git. `CannedSandbox` returns trimmed real Maven logs, so `MavenStrategy` classifies them as it would a live build. `RunStoreContractTest` is the abstract spec that every `RunStore` must pass. `InMemoryRunStoreTest` and `JdbcRunStoreTest` subclass it. A change to `RunStore` behavior goes in the contract test so both bindings stay interchangeable. Each contract test needs an empty store, because `claim()` takes the oldest runnable run in the whole store. `InMemoryRunStoreTest` gets a new store per test. `JdbcRunStoreTest` and `MigrationTest` run in throwaway PostgreSQL schemas (`store/ScratchSchema`), never in `public`. `ForgeGuardCliIntegrationTest` still uses `public` and cleans up its `cli-test-*` rows.
 
-**Work queue (`RunStore.claim`).** `enqueue(spec, taskFile)` creates a run for a worker. `create(spec)` is the synchronous path: it records no `task_file`, so no worker ever claims it.
+**Work queue (`RunStore.claim`).** `enqueue(spec, taskFile)` creates a run for a worker, and `submit` is its only caller outside tests. `create(spec)` is the synchronous path: it records no `task_file`, so no worker ever claims it. Only `VerificationRun.execute(spec, producer)` uses it, and only tests call that.
 - `claim(workerId, lease)` takes the oldest enqueued run that is `PENDING`, or `CLAIMED` with an expired lease. It is one `UPDATE ... FOR UPDATE SKIP LOCKED`, timed by the database clock.
 - Every claim nulls all per-attempt columns and deletes the run's logs in the same transaction. Only a reclaim increments `attempt`.
 - `JdbcRunStoreTest.everyRunsColumnIsClassified` fails when `runs` gains a column, until that column is put in its KEPT, LEASE or CLEARED set and the claim query is updated to match.
@@ -73,8 +79,19 @@ If `git apply` fails, the outcome is `PATCH_REJECTED`. Any other `RuntimeExcepti
   - Two kinds of run are closed as `HARNESS_ERROR` without running: a task whose timeout is over the ceiling, and a task file that won't load. Closing them keeps them from being reclaimed and retried forever.
   - A `LeaseLostException` means another worker has the run. The worker logs it, abandons the run, and carries on. Any other exception ends the process, and the run is reclaimed when its lease expires.
   - There is no graceful shutdown. Ctrl-C also signals the build's child process, so the run is abandoned rather than recorded as a broken build.
-  - Nothing enqueues runs until T5, because `submit` still calls `create()`. For now only tests put runs on the queue.
   - `support/FakeRuns` builds a `VerificationRun` around whatever fenced store a worker hands it. `WorkerTest` uses the in-memory store, and `store/WorkerJdbcTest` runs the same two-worker drain on PostgreSQL in a scratch schema.
+
+**The queue from the CLI (T5).**
+- **`submit`** checks the task's strategy name, then enqueues the run with the task file's absolute path, and prints `run <id>  PENDING`. It verifies nothing.
+  - An unknown strategy is refused before anything is queued, so a bad task file leaves no run behind for a worker to fail on.
+- **`watch <id> [--timeout N]`** reads the run every second. It prints a line per change of state, then the verdict line, then the disagreement line if there is one.
+  - The verdict line has the shape `submit` printed before T5, so scripts can read `$3` of the last `run` line.
+  - A reclaim leaves the state `CLAIMED`, so it prints nothing new.
+  - On timeout, `watch` exits 1. `--timeout 0` reads the run once.
+- **`stats`** prints `RunStore.counts()`: runs grouped by state, verdict and producer claim, as one aggregate query. The output is verdict counts, then the runs still waiting, then the disagreement rate.
+  - The rate is disagreements out of the success claims the harness could check, meaning runs whose producer claimed success and that got a verdict other than `HARNESS_ERROR`.
+  - `ForgeGuardCli.disagrees` is the one rule that `show`, `watch` and `stats` all use.
+- **`demo/run-all.sh`** queues every task, runs `worker --drain`, then reads each verdict with `watch --timeout 0`. Any other runs already waiting in the queue are verified too.
 
 **Verdict classification (`MavenStrategy`).** Maven exits 1 for both compile errors and test failures, so the outcome is read from the log:
 - termination `TIMEOUT` → `TIMEOUT`
@@ -109,7 +126,6 @@ Don't add anything nondeterministic to the producer path. A live LLM producer is
 - `DockerSandbox` and `ProtectedPathCheck` exist in the tree but are **not wired in**. Verification runs as a host process with the user's privileges, network, and `~/.m2`. `LocalProcessSandbox` enforces only a wall-clock timeout, and the `limits` block's memory, CPU, pids, and network values are not enforced.
 - Because protected paths are not checked, `tamper` (which deletes the failing test) gives `PASS`. Both `tamper.patch` and `hang.patch` edit `src/test/`, so once `ProtectedPathCheck` is wired in, `hang` will also be rejected unless its loop moves into main code.
 - `GitDiffInspector` runs a plain `git diff` with no staging, so files the producer *creates* (untracked) are missing from the touched paths and the hash.
-- The claim query exists, but nothing calls it yet. `submit` still runs one attempt synchronously through `create()`, and there is no `worker` command.
 
 Expected fixture verdicts: `correct` → `PASS`, `overclaim` → `TEST_FAIL` (the disagreement demo), `hang` → `TIMEOUT`, `tamper` → `PASS` in M1 and `PROTECTED_PATH_MODIFIED` once the check is wired.
 

@@ -82,4 +82,11 @@ public interface RunStore {
     Optional<RunRecord> find(UUID runId);
 
     List<RunRecord> recent(int limit);
+
+    /**
+     * Every run, grouped by state, verdict and producer claim: one entry per
+     * group that has at least one run, in no particular order, and an empty
+     * list if there are no runs.
+     */
+    List<RunCount> counts();
 }

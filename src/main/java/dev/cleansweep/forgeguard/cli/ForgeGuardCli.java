@@ -2,14 +2,15 @@ package dev.cleansweep.forgeguard.cli;
 
 import dev.cleansweep.forgeguard.orchestrator.GitDiffInspector;
 import dev.cleansweep.forgeguard.orchestrator.VerificationRun;
-import dev.cleansweep.forgeguard.producer.Producer;
 import dev.cleansweep.forgeguard.producer.ScriptedProducer;
 import dev.cleansweep.forgeguard.sandbox.LocalProcessSandbox;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import dev.cleansweep.forgeguard.spec.TaskSpecLoader;
 import dev.cleansweep.forgeguard.store.Database;
 import dev.cleansweep.forgeguard.store.JdbcRunStore;
+import dev.cleansweep.forgeguard.store.RunCount;
 import dev.cleansweep.forgeguard.store.RunRecord;
+import dev.cleansweep.forgeguard.store.RunState;
 import dev.cleansweep.forgeguard.store.RunStore;
 import dev.cleansweep.forgeguard.verify.Outcome;
 import dev.cleansweep.forgeguard.verify.VerificationStrategies;
@@ -25,7 +26,12 @@ import picocli.CommandLine.Spec;
 
 import java.io.PrintWriter;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.EnumMap;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 
 /**
  * Entry point. Wiring happens here and nowhere else: every collaborator is
@@ -37,8 +43,8 @@ import java.util.UUID;
  * fakes, so the output is checked with no Git, Docker, Maven, or PostgreSQL.
  */
 @Command(name = "forgeguard", mixinStandardHelpOptions = true,
-        subcommands = {ForgeGuardCli.Submit.class, ForgeGuardCli.Show.class, ForgeGuardCli.List.class,
-                ForgeGuardCli.WorkerCommand.class})
+        subcommands = {ForgeGuardCli.Submit.class, ForgeGuardCli.WorkerCommand.class, ForgeGuardCli.Watch.class,
+                ForgeGuardCli.Show.class, ForgeGuardCli.List.class, ForgeGuardCli.Stats.class})
 public final class ForgeGuardCli implements Runnable {
 
     @Spec
@@ -81,7 +87,35 @@ public final class ForgeGuardCli implements Runnable {
         return value == null ? "-" : value;
     }
 
-    @Command(name = "submit", description = "Verify the change described by a task file.")
+    static final String DISAGREES = "The producer claimed success. The harness disagrees.";
+
+    /**
+     * A verdict about the change itself. A harness error, or no verdict yet,
+     * decided nothing.
+     */
+    static boolean decided(Outcome outcome) {
+        return outcome != null && outcome != Outcome.HARNESS_ERROR;
+    }
+
+    /**
+     * The disagreement this harness exists to surface: the producer claimed
+     * success and the harness decided otherwise. show, watch and stats all use
+     * this one rule.
+     */
+    static boolean disagrees(boolean producerReportedSuccess, Outcome outcome) {
+        return producerReportedSuccess && decided(outcome) && outcome != Outcome.PASS;
+    }
+
+    /** The line watch ends on once a run has its verdict. */
+    private static void printVerdict(RunRecord r, PrintWriter out) {
+        out.printf("run %s  %s   (producer reported: %s)%n",
+                r.runId(), r.outcome(), r.producerReportedSuccess() ? "success" : "failure");
+        if (disagrees(r.producerReportedSuccess(), r.outcome())) {
+            out.println(DISAGREES);
+        }
+    }
+
+    @Command(name = "submit", description = "Queue the change described by a task file for a worker to verify.")
     static final class Submit implements Runnable {
 
         @Parameters(index = "0", description = "Path to the task YAML file.")
@@ -93,28 +127,160 @@ public final class ForgeGuardCli implements Runnable {
         @Override
         public void run() {
             var loaded = new TaskSpecLoader().load(taskFile);
-            var store = new JdbcRunStore(Database.connect());
-
-            var runner = new VerificationRun(
-                    new JGitWorkspaceProvider(),
-                    new LocalProcessSandbox(),
-                    VerificationStrategies.builtIn(),
-                    store,
-                    new GitDiffInspector());
-
-            submit(runner, store, loaded.spec(),
-                    new ScriptedProducer(loaded.patchFile(), loaded.reportFile()),
-                    spec.commandLine().getOut());
+            submit(new JdbcRunStore(Database.connect()), VerificationStrategies.builtIn(),
+                    loaded.spec(), taskFile, spec.commandLine().getOut());
         }
 
-        /** Runs one attempt and prints one line: run id, verdict, and the producer's claim. */
-        static UUID submit(VerificationRun runner, RunStore store, TaskSpec task,
-                           Producer producer, PrintWriter out) {
-            UUID runId = runner.execute(task, producer);
-            RunRecord r = store.find(runId).orElseThrow();
-            out.printf("run %s  %s   (producer reported: %s)%n",
-                    runId, r.outcome(), r.producerReportedSuccess() ? "success" : "failure");
+        /**
+         * Queues one run and prints one line: the run id and PENDING. Nothing is
+         * verified here. A worker claims the run, and watch waits for its verdict.
+         *
+         * @throws IllegalArgumentException if the task names an unknown strategy.
+         *     That is checked before anything is queued, so a bad task file leaves
+         *     no run behind for a worker to fail on.
+         */
+        static UUID submit(RunStore store, VerificationStrategies strategies, TaskSpec task,
+                           Path taskFile, PrintWriter out) {
+            strategies.get(task.strategy());
+            // Absolute, because a worker may run from another directory.
+            UUID runId = store.enqueue(task, taskFile.toAbsolutePath().normalize());
+            out.printf("run %s  %s   (queued for a worker)%n", runId, RunState.PENDING);
             return runId;
+        }
+    }
+
+    @Command(name = "watch", description = "Wait for a run's verdict, printing each change of state.")
+    static final class Watch implements Callable<Integer> {
+
+        /** How often the run is read again. */
+        static final Duration POLL = Duration.ofSeconds(1);
+
+        @Parameters(index = "0", description = "Run id.")
+        UUID runId;
+
+        @Option(names = "--timeout", paramLabel = "SECONDS", description = {
+                "Give up after this many seconds without a verdict, and exit 1.",
+                "0 checks once. By default, wait for as long as it takes."})
+        Integer timeoutSeconds;
+
+        @Spec
+        CommandSpec spec;
+
+        /** How watch waits between reads. Tests replace it so that nothing sleeps. */
+        interface Sleeper {
+            void sleep(Duration d) throws InterruptedException;
+        }
+
+        @Override
+        public Integer call() {
+            if (timeoutSeconds != null && timeoutSeconds < 0) {
+                throw new IllegalArgumentException("--timeout must not be negative: " + timeoutSeconds);
+            }
+            var store = new JdbcRunStore(Database.connect());
+            Duration timeout = timeoutSeconds == null ? null : Duration.ofSeconds(timeoutSeconds);
+            try {
+                if (watch(store, runId, POLL, timeout, Thread::sleep, spec.commandLine().getOut())) {
+                    return 0;
+                }
+                spec.commandLine().getErr().println(
+                        "forgeguard: run " + runId + " has no verdict after " + timeoutSeconds + "s");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return 1;
+        }
+
+        /**
+         * Prints the run's state, then a line for each change of state, until it
+         * has a verdict. The last line has the shape submit used to print,
+         * {@code run <id>  <VERDICT>   (producer reported: ...)}, followed by the
+         * disagreement line if there is one. A reclaim leaves the run CLAIMED, so
+         * it prints no new line.
+         *
+         * @param timeout how long to wait in total, or null to wait for as long
+         *     as it takes. Zero reads the run once.
+         * @return true once the run has a verdict, false if the timeout came first
+         * @throws IllegalArgumentException if there is no such run
+         */
+        static boolean watch(RunStore store, UUID runId, Duration poll, Duration timeout,
+                             Sleeper sleeper, PrintWriter out) throws InterruptedException {
+            Duration waited = Duration.ZERO;
+            RunState shown = null;
+            while (true) {
+                RunRecord r = store.find(runId).orElseThrow(
+                        () -> new IllegalArgumentException("no such run: " + runId));
+                if (r.outcome() != null) {
+                    printVerdict(r, out);
+                    out.flush();
+                    return true;
+                }
+                if (r.state() != shown) {
+                    out.printf("run %s  %s%n", runId, r.state());
+                    out.flush();
+                    shown = r.state();
+                }
+                if (timeout != null && waited.compareTo(timeout) >= 0) {
+                    return false;
+                }
+                sleeper.sleep(poll);
+                waited = waited.plus(poll);
+            }
+        }
+    }
+
+    @Command(name = "stats", description = "Count runs by verdict, and how often a producer's success claim was wrong.")
+    static final class Stats implements Runnable {
+
+        @Spec
+        CommandSpec spec;
+
+        @Override
+        public void run() {
+            stats(new JdbcRunStore(Database.connect()).counts(), spec.commandLine().getOut());
+        }
+
+        /**
+         * Prints the verdicts in Outcome order, then the runs still waiting, in
+         * RunState order. Groups with no runs are left out.
+         *
+         * <p>Then the disagreement rate. The denominator is the success claims the
+         * harness could check: runs whose producer claimed success and that got
+         * a decided verdict. The numerator is those it disagreed with. Harness
+         * errors and unfinished runs decided nothing, so they are in neither.
+         * Neither is a producer that admitted failure, which made no claim to check.
+         */
+        static void stats(java.util.List<RunCount> counts, PrintWriter out) {
+            Map<Outcome, Long> verdicts = new EnumMap<>(Outcome.class);
+            Map<RunState, Long> waiting = new EnumMap<>(RunState.class);
+            long total = 0;
+            long checked = 0;
+            long disagreed = 0;
+            for (RunCount c : counts) {
+                total += c.runs();
+                if (c.outcome() == null) {
+                    waiting.merge(c.state(), c.runs(), Long::sum);
+                } else {
+                    verdicts.merge(c.outcome(), c.runs(), Long::sum);
+                }
+                if (c.producerReportedSuccess() && decided(c.outcome())) {
+                    checked += c.runs();
+                }
+                if (disagrees(c.producerReportedSuccess(), c.outcome())) {
+                    disagreed += c.runs();
+                }
+            }
+
+            out.printf("%-24s %5s%n", "VERDICT", "RUNS");
+            verdicts.forEach((outcome, n) -> out.printf("%-24s %5d%n", outcome, n));
+            waiting.forEach((state, n) -> out.printf("%-24s %5d%n", state, n));
+            out.printf("%-24s %5d%n", "total", total);
+            out.println();
+            if (checked == 0) {
+                out.println("disagreement rate  -       no success claims checked yet");
+            } else {
+                out.printf("disagreement rate  %-7s %d of the %d success claims the harness could check were wrong%n",
+                        String.format(Locale.ROOT, "%.1f%%", 100.0 * disagreed / checked), disagreed, checked);
+            }
         }
     }
 
@@ -162,12 +328,8 @@ public final class ForgeGuardCli implements Runnable {
             out.println(stdout);
         }
 
-        /** Only a decided verdict can disagree. A harness error, or no verdict yet, decided nothing. */
         private static String disagreementNote(RunRecord r) {
-            boolean decided = r.outcome() != null && r.outcome() != Outcome.HARNESS_ERROR;
-            return r.producerReportedSuccess() && decided && r.outcome() != Outcome.PASS
-                    ? "\nThe producer claimed success. The harness disagrees."
-                    : "";
+            return disagrees(r.producerReportedSuccess(), r.outcome()) ? "\n" + DISAGREES : "";
         }
     }
 

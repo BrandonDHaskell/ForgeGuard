@@ -56,10 +56,19 @@ docker compose up -d postgres
 ./fixtures/verify-fixtures.sh
 mvn -B -f /tmp/forgeguard-fixtures/intervals-java/pom.xml verify -Dmaven.test.failure.ignore=true
 mvn -B package
-java -jar target/forgeguard-0.1.0-SNAPSHOT.jar submit tasks/overclaim.yaml
+java -jar target/forgeguard-0.1.0-SNAPSHOT.jar submit tasks/overclaim.yaml   # queues a run, prints its id
+java -jar target/forgeguard-0.1.0-SNAPSHOT.jar worker --drain                 # verifies queued runs, then exits
+java -jar target/forgeguard-0.1.0-SNAPSHOT.jar watch <run-id>                 # waits for the verdict
 java -jar target/forgeguard-0.1.0-SNAPSHOT.jar show <run-id>
 java -jar target/forgeguard-0.1.0-SNAPSHOT.jar list
+java -jar target/forgeguard-0.1.0-SNAPSHOT.jar stats                          # verdict counts, disagreement rate
 ```
+
+`submit` only queues a run; a `worker` claims it and verifies it. Without
+`--drain`, a worker keeps polling for new runs until it is stopped. `watch`
+prints each change of state and exits once the run has its verdict.
+`demo/run-all.sh` runs every task in `tasks/` this way and grades the verdicts
+against `demo/expected.tsv`.
 
 `build-fixtures.sh` builds both fixture repos (`intervals-java` and
 `intervals-python`) with pinned commit SHAs, and `verify-fixtures.sh` checks the
@@ -87,8 +96,19 @@ mvn -B verify   # also the @Tag("integration") tests, against the PostgreSQL abo
 | `FORGEGUARD_DB_PASSWORD` | `forgeguard` |
 
 Per-run limits (timeout, memory, CPUs, pids, network) come from the `limits`
-block of each task file, not from the environment. Lease and polling settings
-arrive with the work queue in Milestone 2.
+block of each task file, not from the environment. A worker's settings do come
+from the environment:
+
+| Variable | Default |
+| --- | --- |
+| `FORGEGUARD_WORKER_ID` | `worker-<pid>@<host>` |
+| `FORGEGUARD_LEASE_SECONDS` | `360` |
+| `FORGEGUARD_POLL_SECONDS` | `2` |
+| `FORGEGUARD_MAX_TIMEOUT_SECONDS` | `300` |
+
+A worker refuses to start unless its lease is longer than
+`FORGEGUARD_MAX_TIMEOUT_SECONDS` plus 15 seconds. It closes any task whose
+timeout is over that ceiling as `HARNESS_ERROR` without running it.
 
 ## Layout
 
@@ -103,7 +123,8 @@ verify/        VerificationStrategy   build and test contract per project type:
                MavenStrategy, PytestStrategy, looked up by the task's strategy:
                ProtectedPathCheck     files a change may not touch
 store/         RunStore, RunRecord    persisted evidence
-cli/           ForgeGuardCli          submit, show, list
+worker/        Worker, WorkerConfig   claim, verify, repeat; lease settings
+cli/           ForgeGuardCli          submit, worker, watch, show, list, stats
 ```
 
 See `PROPOSAL_TRACE.md` for scope against the proposal, `BUILD_PLAN.md` for the

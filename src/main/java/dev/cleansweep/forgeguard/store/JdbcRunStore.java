@@ -314,6 +314,30 @@ public final class JdbcRunStore implements RunStore {
         }
     }
 
+    /** One aggregate query. A NULL claim (no producer result yet) counts as false, as map() reads it. */
+    @Override
+    public List<RunCount> counts() {
+        try (Connection c = ds.getConnection();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT state::text AS state, outcome,
+                            coalesce(producer_reported_success, false) AS claimed, count(*) AS runs
+                     FROM runs
+                     GROUP BY 1, 2, 3
+                     """);
+             ResultSet rs = ps.executeQuery()) {
+            List<RunCount> out = new ArrayList<>();
+            while (rs.next()) {
+                String outcome = rs.getString("outcome");
+                out.add(new RunCount(RunState.valueOf(rs.getString("state")),
+                        outcome == null ? null : Outcome.valueOf(outcome),
+                        rs.getBoolean("claimed"), rs.getLong("runs")));
+            }
+            return out;
+        } catch (SQLException e) {
+            throw new StoreException("cannot count runs", e);
+        }
+    }
+
     @Override
     public String logs(UUID runId, String stream) {
         try (Connection c = ds.getConnection();

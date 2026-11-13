@@ -7,6 +7,7 @@ import dev.cleansweep.forgeguard.sandbox.Sandbox;
 import dev.cleansweep.forgeguard.spec.Limits;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import dev.cleansweep.forgeguard.store.Claim;
+import dev.cleansweep.forgeguard.store.RunCount;
 import dev.cleansweep.forgeguard.store.RunRecord;
 import dev.cleansweep.forgeguard.store.RunStore;
 import dev.cleansweep.forgeguard.support.CannedSandbox;
@@ -228,6 +229,13 @@ class VerificationRunTest {
         @Override
         public String logs(UUID runId, String stream) {
             return delegate.logs(runId, stream);
+        }
+
+        // The stats aggregate (T5). VerificationRun never calls it.
+
+        @Override
+        public List<RunCount> counts() {
+            return delegate.counts();
         }
     }
 }
