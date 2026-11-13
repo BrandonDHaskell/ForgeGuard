@@ -10,13 +10,10 @@ import java.util.concurrent.TimeUnit;
 /**
  * Runs the verification command as a host process in the workspace directory.
  *
- * <p>This is the Milestone 1 sandbox. It enforces a wall-clock timeout and kills
+ * <p>This is the only sandbox wired in. It enforces a wall-clock timeout and kills
  * the whole process tree, but it does not isolate the filesystem, the network,
- * or memory. The isolation claim in the proposal belongs to DockerSandbox, which
- * replaces this in Milestone 2.
- *
- * <p>It stays in the codebase afterward as the unit-test fixture, so the test
- * suite never has to start a container.
+ * or memory, and ignores those fields of Limits. The Docker sandbox in the
+ * proposal was cut; see PROPOSAL_TRACE.md.
  */
 public final class LocalProcessSandbox implements Sandbox {
 

@@ -1,0 +1,11 @@
+# Answer key for demo/run-all.sh: task file name, then the verdict it must get.
+# Kept out of the task files on purpose. The loader rejects unknown fields, and
+# the harness never sees the answer it is graded against.
+correct	PASS
+overclaim	TEST_FAIL
+tamper	PROTECTED_PATH_MODIFIED
+hang	TIMEOUT
+py-correct	PASS
+py-overclaim	TEST_FAIL
+py-tamper	PROTECTED_PATH_MODIFIED
+py-hang	TIMEOUT

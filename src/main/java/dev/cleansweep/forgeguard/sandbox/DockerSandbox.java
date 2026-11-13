@@ -19,6 +19,12 @@ import java.util.concurrent.TimeUnit;
  * <p>The workspace is copied into the container with {@code docker cp} rather
  * than bind-mounted, so a process inside cannot reach host files through the
  * mount, and a crash leaves the host tree untouched.
+ *
+ * <p>Not wired in, and does not work as written: {@code docker cp} cannot copy
+ * into the {@code /work} tmpfs, the copied files are owned by root so the
+ * container user cannot write {@code target/}, and Maven is never pointed at
+ * {@code /cache}. Kept as the design record for the cut Docker sandbox; see
+ * PROPOSAL_TRACE.md.
  */
 public final class DockerSandbox implements Sandbox {
 
