@@ -19,7 +19,7 @@ finish plan (B for Brandon, T for Timothy) that delivers it.
 | 4 | Sandboxed execution | Changed: process-level only, Docker cut | `LocalProcessSandbox` | `LocalProcessSandboxTest.killsCommandThatExceedsTimeout`, `timeoutKillsForkedChildrenNotJustTheDirectChild`, `outputLargerThanThePipeBufferDoesNotDeadlock` | 1 (`hang`) |
 | 5 | Verification strategy, Maven then pytest | Done | `VerificationStrategy`, `MavenStrategy`, `PytestStrategy`, `VerificationStrategies` | `MavenStrategyTest`, `PytestStrategyTest.noTestsCollectedIsNeverPass`, `VerificationStrategiesTest`, `VerificationRunStrategyTest` | 3 |
 | 6 | Run records in PostgreSQL | Done | `JdbcRunStore`, `Database`, `V1__init.sql` | `RunStoreContractTest`, `JdbcRunStoreTest`, `DatabaseTest` | 2 |
-| 7 | CLI: submit, watch, show, summarize with disagreement rate | `submit`, `show`, `list` done; `watch` and `stats` pending (T5) | `ForgeGuardCli` | `ForgeGuardCliTest`, `ForgeGuardCliIntegrationTest.showOverclaimRunPrintsTheDisagreement` | 2, 5 |
+| 7 | CLI: submit, watch, show, summarize with disagreement rate | Done. `submit` only queues; `watch` waits for the verdict; `stats` summarizes | `ForgeGuardCli`, `RunStore.counts` | `ForgeGuardCliTest.failingTestsGiveTestFailAndWatchAndShowPrintTheDisagreement`, `watchPrintsEachChangeOfStateUntilTheVerdict`, `statsCountsVerdictsAndTheDisagreementRate`, `ForgeGuardCliIntegrationTest.submitQueuesTheRunForAWorker`, `RunStoreContractTest.countsGroupEveryRunByStateVerdictAndClaim` | 2, 5 |
 
 ### Distributed execution
 

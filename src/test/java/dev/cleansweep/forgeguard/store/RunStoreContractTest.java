@@ -170,6 +170,52 @@ public abstract class RunStoreContractTest {
         }
     }
 
+    // --- counts, for the stats command --------------------------------------
+
+    /** A run that finished with outcome, after a producer that reported claimedSuccess. */
+    private void finished(boolean claimedSuccess, Outcome outcome) {
+        UUID id = store().create(spec());
+        store().recordProducerResult(id, new ProducerResult(claimedSuccess, "{}"), "abc123", "d1ff");
+        store().recordVerdict(id, outcome, exec(outcome == Outcome.PASS ? 0 : 1, Termination.EXITED));
+    }
+
+    @Test
+    void noRunsCountAsNoGroups() {
+        assertEquals(List.of(), store().counts());
+    }
+
+    @Test
+    void countsGroupEveryRunByStateVerdictAndClaim() {
+        store().create(spec());                       // PENDING, never reported
+        store().enqueue(spec(), TASK_FILE);
+        claim("w1", HOUR);                            // CLAIMED, never reported
+        finished(true, Outcome.PASS);
+        finished(true, Outcome.PASS);
+        finished(true, Outcome.TEST_FAIL);
+        finished(false, Outcome.TEST_FAIL);
+
+        List<RunCount> counts = store().counts();
+
+        assertEquals(Set.of(
+                new RunCount(RunState.PENDING, null, false, 1),
+                new RunCount(RunState.CLAIMED, null, false, 1),
+                new RunCount(RunState.DONE, Outcome.PASS, true, 2),
+                new RunCount(RunState.DONE, Outcome.TEST_FAIL, true, 1),
+                new RunCount(RunState.DONE, Outcome.TEST_FAIL, false, 1)), new HashSet<>(counts));
+        assertEquals(5, counts.size(), "each group appears once: " + counts);
+    }
+
+    /** A reclaim clears the claim, so a run being re-executed no longer counts as claiming success. */
+    @Test
+    void aReclaimedRunCountsAsNotYetReported() {
+        UUID id = store().enqueue(spec(), TASK_FILE);
+        Claim first = claim("w1", Duration.ZERO);
+        store().fencedTo(first).recordProducerResult(id, new ProducerResult(true, "{}"), "abc123", "d1ff");
+        claim("w2", HOUR);
+
+        assertEquals(List.of(new RunCount(RunState.CLAIMED, null, false, 1)), store().counts());
+    }
+
     // --- the work queue ---------------------------------------------------
 
     private Claim claim(String worker, Duration lease) {

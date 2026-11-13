@@ -61,8 +61,16 @@ submit tasks/overclaim.yaml
 TaskSpecLoader              YAML -> TaskSpec            (no I/O beyond the file)
   |
   v
-RunStore.create             INSERT tasks, INSERT runs (state=PENDING)
-  |                         -> run_id = 7c2e...
+RunStore.enqueue            INSERT tasks, INSERT runs (state=PENDING,
+  |                         task_file='<repo>/tasks/overclaim.yaml')
+  |                         -> run_id = 7c2e...  submit prints it and exits
+  v
+worker: RunStore.claim      UPDATE runs SET state='CLAIMED', claimed_by='w1',
+  |                         lease_expires_at=now()+lease  (FOR UPDATE SKIP LOCKED)
+  |                         every write below goes through store.fencedTo(claim)
+  v
+TaskSpecLoader              the worker loads task_file again
+  |
   v
 WorkspaceProvider.provision JGit clone file:///tmp/... ; checkout v1.0
   |                         -> /tmp/fg-ws-7c2e/ , baseCommit=7f856174...

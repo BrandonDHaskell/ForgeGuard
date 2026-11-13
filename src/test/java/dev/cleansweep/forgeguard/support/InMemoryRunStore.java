@@ -6,6 +6,7 @@ import dev.cleansweep.forgeguard.sandbox.Termination;
 import dev.cleansweep.forgeguard.spec.TaskSpec;
 import dev.cleansweep.forgeguard.store.Claim;
 import dev.cleansweep.forgeguard.store.LeaseLostException;
+import dev.cleansweep.forgeguard.store.RunCount;
 import dev.cleansweep.forgeguard.store.RunRecord;
 import dev.cleansweep.forgeguard.store.RunState;
 import dev.cleansweep.forgeguard.store.RunStore;
@@ -230,6 +231,11 @@ public final class InMemoryRunStore implements RunStore {
         public List<RunRecord> recent(int limit) {
             return InMemoryRunStore.this.recent(limit);
         }
+
+        @Override
+        public List<RunCount> counts() {
+            return InMemoryRunStore.this.counts();
+        }
     }
 
     @Override
@@ -240,6 +246,20 @@ public final class InMemoryRunStore implements RunStore {
     @Override
     public synchronized List<RunRecord> recent(int limit) {
         return runs.sequencedValues().reversed().stream().limit(limit).map(Row::toRecord).toList();
+    }
+
+    private record Group(RunState state, Outcome outcome, boolean producerReportedSuccess) {}
+
+    @Override
+    public synchronized List<RunCount> counts() {
+        Map<Group, Long> groups = new LinkedHashMap<>();
+        for (Row r : runs.values()) {
+            groups.merge(new Group(r.state, r.outcome, r.producerReportedSuccess), 1L, Long::sum);
+        }
+        return groups.entrySet().stream()
+                .map(e -> new RunCount(e.getKey().state(), e.getKey().outcome(),
+                        e.getKey().producerReportedSuccess(), e.getValue()))
+                .toList();
     }
 
     @Override
