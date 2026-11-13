@@ -69,7 +69,8 @@ lists every change from the proposal.
   `--network none`, which left with Docker.
 - **Reclaim.** When a lease expires, the claim transaction must null every
   verdict column and delete that run's `run_logs` rows, or a record ends up with
-  one worker's exit code and another's logs. Designed this way for M2 (T2).
+  one worker's exit code and another's logs. Done in T2, and T3 fences a stale
+  worker's writes.
 
 ## Split
 

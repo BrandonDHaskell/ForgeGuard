@@ -120,6 +120,17 @@ or produce a misleading green log.
 Logs are written before the verdict, so a run that has a verdict always has its
 logs.
 
+A worker takes the same path from `WorkspaceProvider.provision` down. It calls
+`VerificationRun.execute(runId, spec, producer)` with a run it has claimed, so
+`RunStore.create` is skipped and every write goes through the store fenced to
+that claim. Two outcomes differ from `submit`:
+
+- an unknown `strategy` is recorded as `HARNESS_ERROR`, with the reason as the
+  stderr log, because the run already exists and would otherwise stay claimable
+- a write refused because the lease was lost propagates out of `execute` rather
+  than being swallowed, so the worker can abandon the attempt and leave the run
+  to whoever reclaimed it
+
 ## 4. The container command (designed, not delivered)
 
 `DockerSandbox` was cut from Milestone 2 (see `PROPOSAL_TRACE.md`). This is the
